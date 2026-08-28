@@ -7,10 +7,6 @@ const khoiSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
-  moTa: {
-    type: String,
-    default: ''
-  },
   thuTu: {
     type: Number,
     default: 0
