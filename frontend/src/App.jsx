@@ -4,6 +4,7 @@ import LopPage from './pages/LopPage';
 import LopChuyenMonPage from './pages/LopChuyenMonPage';
 import GiaoVienPage from './pages/GiaoVienPage';
 import ThoiKhoaBieuPage from './pages/ThoiKhoaBieuPage';
+import BangPhanCongPage from './pages/BangPhanCongPage';
 import './App.css';
 
 function App() {
@@ -81,6 +82,18 @@ function App() {
               >
                 Thời Khóa Biểu
               </NavLink>
+              <NavLink
+                to="/bang-phan-cong"
+                className={({ isActive }) =>
+                  `px-4 py-3 font-medium transition-colors ${
+                    isActive
+                      ? 'text-white border-b-2 border-white'
+                      : 'text-blue-100 hover:text-white'
+                  }`
+                }
+              >
+                Bảng phân công
+              </NavLink>
             </div>
           </div>
         </nav>
@@ -93,6 +106,7 @@ function App() {
             <Route path="/lop-chuyen-mon" element={<LopChuyenMonPage />} />
             <Route path="/giao-vien" element={<GiaoVienPage />} />
             <Route path="/thoi-khoa-bieu" element={<ThoiKhoaBieuPage />} />
+            <Route path="/bang-phan-cong" element={<BangPhanCongPage />} />
           </Routes>
         </main>
 

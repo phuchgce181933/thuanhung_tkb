@@ -12,9 +12,7 @@ function LopPage() {
   const [formData, setFormData] = useState({
     tenLop: '',
     khoi: '',
-    siSo: 0,
-    giaoVienChuNhiem: '',
-    phongHoc: ''
+    giaoVienChuNhiem: ''
   });
 
   useEffect(() => {
@@ -76,9 +74,7 @@ function LopPage() {
     setFormData({
       tenLop: lop.tenLop,
       khoi: typeof lop.khoi === 'object' ? lop.khoi._id : lop.khoi,
-      siSo: lop.siSo || 0,
-      giaoVienChuNhiem: lop.giaoVienChuNhiem || '',
-      phongHoc: lop.phongHoc || ''
+      giaoVienChuNhiem: lop.giaoVienChuNhiem || ''
     });
     setShowModal(true);
   };
@@ -99,9 +95,7 @@ function LopPage() {
     setFormData({
       tenLop: '',
       khoi: khois.length > 0 ? khois[0]._id : '',
-      siSo: 0,
-      giaoVienChuNhiem: '',
-      phongHoc: ''
+      giaoVienChuNhiem: ''
     });
     setShowModal(true);
   };
@@ -163,13 +157,7 @@ function LopPage() {
                   Khối
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Sĩ Số
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   GV Chủ Nhiệm
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Phòng Học
                 </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Hành Động
@@ -179,7 +167,7 @@ function LopPage() {
             <tbody className="bg-white divide-y divide-gray-200">
               {lops.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="px-6 py-4 text-center text-gray-500">
+                  <td colSpan="5" className="px-6 py-4 text-center text-gray-500">
                     Chưa có lớp nào. Hãy thêm lớp mới!
                   </td>
                 </tr>
@@ -196,13 +184,7 @@ function LopPage() {
                       {typeof lop.khoi === 'object' ? lop.khoi.tenKhoi : ''}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {lop.siSo || 0}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {lop.giaoVienChuNhiem || '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {lop.phongHoc || '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <button
@@ -270,18 +252,6 @@ function LopPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Sĩ Số
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.siSo}
-                    onChange={(e) => setFormData({ ...formData, siSo: parseInt(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    min="0"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
                     Giáo Viên Chủ Nhiệm
                   </label>
                   <input
@@ -290,18 +260,6 @@ function LopPage() {
                     onChange={(e) => setFormData({ ...formData, giaoVienChuNhiem: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="Tên giáo viên..."
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Phòng Học
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.phongHoc}
-                    onChange={(e) => setFormData({ ...formData, phongHoc: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="VD: A101"
                   />
                 </div>
               </div>
