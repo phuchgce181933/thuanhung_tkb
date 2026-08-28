@@ -38,18 +38,81 @@ saplich/
 └── README.md
 ```
 
+## Đóng Gói Thành Ứng Dụng Windows
+
+Sau khi sửa code, thực hiện từ thư mục gốc `E:\saplich`:
+
+### 1. Kiểm tra frontend
+
+```powershell
+cd E:\saplich
+npm --prefix frontend run build
+```
+
+Nếu build thành công, tiếp tục đóng gói app.
+
+### 2. Tạo file cài đặt `.exe`
+
+Đóng tất cả cửa sổ app hoặc installer cũ trước khi chạy:
+
+```powershell
+cd E:\saplich
+$env:CSC_IDENTITY_AUTO_DISCOVERY='false'
+npm run package
+```
+
+File cài đặt sẽ nằm trong thư mục `release` với tên dạng:
+
+```text
+release\Quản lý trường học Setup <version>.exe
+```
+
+Chỉ cần gửi file `.exe` này cho máy khác. Không cần gửi cả thư mục mã nguồn, không cần cài VS Code, Node.js, npm hoặc MongoDB local.
+
+Ứng dụng tự chạy backend ngầm khi mở và kết nối MongoDB Atlas qua cấu hình trong `backend/.env`.
+
+### 3. Chạy bản không cần cài đặt để kiểm tra nhanh
+
+Nếu installer bị Windows Defender hoặc file cũ khóa, tạo bản chạy trực tiếp:
+
+```powershell
+cd E:\saplich
+npm run package:dir
+```
+
+Sau đó chạy:
+
+```text
+release\win-unpacked\Quản lý trường học.exe
+```
+
+### 4. Khi build báo file bị khóa
+
+Đóng app đang chạy, cửa sổ cài đặt và các tiến trình Electron cũ. Nếu vẫn bị khóa, đổi `version` trong `package.json`, ví dụ `1.0.4` thành `1.0.5`, rồi chạy lại lệnh đóng gói. Mỗi phiên bản mới sẽ tạo một tên installer khác.
+
+### 5. Debug app đóng gói
+
+Bản app hiện tại tự mở DevTools khi khởi động. Log backend và renderer nằm tại:
+
+```text
+%APPDATA%\saplich-school-management\saplich-debug.log
+```
+
+Nếu thấy `ERR_CONNECTION_REFUSED`, kiểm tra log để biết backend có chạy được tại `localhost:5000` hay không.
+
 ## Yêu Cầu
 
 - Node.js v18+
-- MongoDB (cài đặt local hoặc dùng MongoDB Atlas)
+- MongoDB Atlas hoặc MongoDB local khi chạy ở chế độ development
+- Electron và electron-builder (được cài ở thư mục gốc khi đóng gói)
 
 ## Cách Chạy
 
 ### 1. Start MongoDB
 
-Đảm bảo MongoDB đang chạy:
+Đảm bảo MongoDB đang chạy nếu dùng local:
 - Local: `mongod`
-- Hoặc dùng MongoDB Atlas và cập nhật `MONGODB_URI` trong `backend/.env`
+- Hoặc dùng MongoDB Atlas và cập nhật `MONGODB_URI` trong `backend/.env`. Máy chạy app cần có internet và IP được cho phép trong Atlas Network Access.
 
 ### 2. Cài Đặt Backend
 

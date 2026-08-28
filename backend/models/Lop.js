@@ -11,16 +11,7 @@ const lopSchema = new mongoose.Schema({
     ref: 'Khoi',
     required: [true, 'Khối không được để trống']
   },
-  siSo: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
   giaoVienChuNhiem: {
-    type: String,
-    default: ''
-  },
-  phongHoc: {
     type: String,
     default: ''
   },

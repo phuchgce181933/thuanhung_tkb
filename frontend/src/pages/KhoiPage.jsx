@@ -8,9 +8,7 @@ function KhoiPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingKhoi, setEditingKhoi] = useState(null);
   const [formData, setFormData] = useState({
-    tenKhoi: '',
-    moTa: '',
-    thuTu: 0
+    tenKhoi: ''
   });
 
   useEffect(() => {
@@ -49,9 +47,7 @@ function KhoiPage() {
   const handleEdit = (khoi) => {
     setEditingKhoi(khoi);
     setFormData({
-      tenKhoi: khoi.tenKhoi,
-      moTa: khoi.moTa || '',
-      thuTu: khoi.thuTu || 0
+      tenKhoi: khoi.tenKhoi
     });
     setShowModal(true);
   };
@@ -69,14 +65,14 @@ function KhoiPage() {
 
   const openModal = () => {
     setEditingKhoi(null);
-    setFormData({ tenKhoi: '', moTa: '', thuTu: 0 });
+    setFormData({ tenKhoi: '' });
     setShowModal(true);
   };
 
   const closeModal = () => {
     setShowModal(false);
     setEditingKhoi(null);
-    setFormData({ tenKhoi: '', moTa: '', thuTu: 0 });
+    setFormData({ tenKhoi: '' });
   };
 
   return (
@@ -113,12 +109,6 @@ function KhoiPage() {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Tên Khối
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Mô Tả
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Thứ Tự
-                </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Hành Động
                 </th>
@@ -127,7 +117,7 @@ function KhoiPage() {
             <tbody className="bg-white divide-y divide-gray-200">
               {khois.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="px-6 py-4 text-center text-gray-500">
+                  <td colSpan="3" className="px-6 py-4 text-center text-gray-500">
                     Chưa có khối nào. Hãy thêm khối mới!
                   </td>
                 </tr>
@@ -139,12 +129,6 @@ function KhoiPage() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                       {khoi.tenKhoi}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {khoi.moTa || '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {khoi.thuTu}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <button
@@ -190,30 +174,6 @@ function KhoiPage() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="VD: Khối 1"
                     required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Mô Tả
-                  </label>
-                  <textarea
-                    value={formData.moTa}
-                    onChange={(e) => setFormData({ ...formData, moTa: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    rows="2"
-                    placeholder="Mô tả khối học..."
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Thứ Tự
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.thuTu}
-                    onChange={(e) => setFormData({ ...formData, thuTu: parseInt(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    min="0"
                   />
                 </div>
               </div>

@@ -47,6 +47,10 @@ export const tkbAPI = {
   getStats: (namHoc) => api.get('/thoi-khoa-bieu/stats', { params: { namHoc } }),
   autoGenerate: (namHoc) => api.post('/thoi-khoa-bieu/auto-generate', { namHoc }),
   updateTiet: (data) => api.put('/thoi-khoa-bieu/tiet', data),
+  moveTiet: (data) => api.post('/thoi-khoa-bieu/move-tiet', data),
+  swapTiet: (data) => api.post('/thoi-khoa-bieu/swap-tiet', data),
+  rearrangeAfterLock: (data) => api.post('/thoi-khoa-bieu/rearrange-after-lock', data),
+  applyBatch: (data) => api.post('/thoi-khoa-bieu/apply-batch', data),
   exportExcel: async (namHoc) => {
     const response = await api.get('/thoi-khoa-bieu/export-excel', {
       params: { namHoc },

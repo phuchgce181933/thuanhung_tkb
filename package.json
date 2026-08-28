@@ -1,0 +1,52 @@
+{
+  "name": "saplich-school-management",
+  "version": "1.0.4",
+  "description": "Ứng dụng quản lý và xếp thời khóa biểu",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build:frontend": "npm --prefix frontend run build",
+    "dev": "npm --prefix frontend run dev",
+    "package:dir": "npm run build:frontend && electron-builder --win --dir",
+    "package": "npm run build:frontend && electron-builder --win",
+    "start": "electron ."
+  },
+  "build": {
+    "appId": "vn.saplich.schoolmanagement",
+    "productName": "Quản lý trường học",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "frontend/dist",
+        "to": "frontend/dist"
+      },
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!scripts/**/*",
+          "!test-*.js"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}

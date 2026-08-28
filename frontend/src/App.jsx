@@ -1,109 +1,102 @@
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import { useState } from 'react';
+import { HashRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import KhoiPage from './pages/KhoiPage';
 import LopPage from './pages/LopPage';
 import LopChuyenMonPage from './pages/LopChuyenMonPage';
 import GiaoVienPage from './pages/GiaoVienPage';
 import ThoiKhoaBieuPage from './pages/ThoiKhoaBieuPage';
+import BangPhanCongPage from './pages/BangPhanCongPage';
+import DashboardHomePage from './pages/DashboardHomePage';
 import './App.css';
 
-function App() {
+const NAV_ITEMS = [
+  { to: '/', label: 'Tổng quan', icon: '⌂', end: true },
+  { to: '/khoi', label: 'Khối', icon: '▦' },
+  { to: '/lop', label: 'Lớp học', icon: '▤' },
+  { to: '/lop-chuyen-mon', label: 'Phân công môn', icon: '◈' },
+  { to: '/giao-vien', label: 'Giáo viên', icon: '♙' },
+  { to: '/thoi-khoa-bieu', label: 'Thời khóa biểu', icon: '▣' },
+  { to: '/bang-phan-cong', label: 'Bảng phân công', icon: '▥' }
+];
+
+function DashboardLayout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const location = useLocation();
+  const currentItem = NAV_ITEMS.find((item) => item.end
+    ? location.pathname === item.to
+    : location.pathname.startsWith(item.to)) || NAV_ITEMS[0];
+
   return (
-    <BrowserRouter>
-      <div className="min-h-screen bg-gray-100">
-        {/* Header */}
-        <header className="bg-blue-600 text-white shadow-lg">
-          <div className="container mx-auto px-4 py-4">
-            <h1 className="text-2xl font-bold">Quản Lý Trường Học</h1>
+    <div className={`dashboard-shell ${sidebarOpen ? 'sidebar-open' : ''}`}>
+      <aside className="dashboard-sidebar">
+        <div className="brand-block">
+          <div className="brand-mark">S</div>
+          <div>
+            <strong>Sắp Lịch</strong>
+            <span>School workspace</span>
+          </div>
+        </div>
+
+        <div className="sidebar-section-label">QUẢN LÝ</div>
+        <nav className="dashboard-nav" aria-label="Điều hướng chính">
+          {NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              onClick={() => setSidebarOpen(false)}
+              className={({ isActive }) => isActive ? 'dashboard-nav-link active' : 'dashboard-nav-link'}
+            >
+              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="connection-pill"><span /> Atlas database</div>
+          <span className="sidebar-version">v1.0.3</span>
+        </div>
+      </aside>
+
+      <div className="dashboard-main">
+        <header className="dashboard-topbar">
+          <button type="button" className="menu-toggle" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Mở menu">
+            ☰
+          </button>
+          <div className="topbar-context">
+            <span className="topbar-eyebrow">TRƯỜNG TIỂU HỌC</span>
+            <span className="topbar-title">{currentItem.label}</span>
+          </div>
+          <div className="topbar-actions">
+            <span className="today-label">Năm học 2024 - 2025</span>
+            <div className="profile-chip"><span className="profile-avatar">QT</span><span>Quản trị viên</span></div>
           </div>
         </header>
 
-        {/* Navigation */}
-        <nav className="bg-blue-500 shadow-sm">
-          <div className="container mx-auto px-4">
-            <div className="flex flex-wrap space-x-6">
-              <NavLink
-                to="/"
-                className={({ isActive }) =>
-                  `px-4 py-3 font-medium transition-colors ${
-                    isActive
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-blue-100 hover:text-white'
-                  }`
-                }
-              >
-                Khối
-              </NavLink>
-              <NavLink
-                to="/lop"
-                className={({ isActive }) =>
-                  `px-4 py-3 font-medium transition-colors ${
-                    isActive
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-blue-100 hover:text-white'
-                  }`
-                }
-              >
-                Lớp
-              </NavLink>
-              <NavLink
-                to="/lop-chuyen-mon"
-                className={({ isActive }) =>
-                  `px-4 py-3 font-medium transition-colors ${
-                    isActive
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-blue-100 hover:text-white'
-                  }`
-                }
-              >
-                Phân công Môn học
-              </NavLink>
-              <NavLink
-                to="/giao-vien"
-                className={({ isActive }) =>
-                  `px-4 py-3 font-medium transition-colors ${
-                    isActive
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-blue-100 hover:text-white'
-                  }`
-                }
-              >
-                Giáo Viên
-              </NavLink>
-              <NavLink
-                to="/thoi-khoa-bieu"
-                className={({ isActive }) =>
-                  `px-4 py-3 font-medium transition-colors ${
-                    isActive
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-blue-100 hover:text-white'
-                  }`
-                }
-              >
-                Thời Khóa Biểu
-              </NavLink>
-            </div>
-          </div>
-        </nav>
-
-        {/* Main Content */}
-        <main className="container mx-auto px-4 py-8">
+        <main className="dashboard-content">
           <Routes>
-            <Route path="/" element={<KhoiPage />} />
+            <Route path="/" element={<DashboardHomePage />} />
+            <Route path="/khoi" element={<KhoiPage />} />
             <Route path="/lop" element={<LopPage />} />
             <Route path="/lop-chuyen-mon" element={<LopChuyenMonPage />} />
             <Route path="/giao-vien" element={<GiaoVienPage />} />
             <Route path="/thoi-khoa-bieu" element={<ThoiKhoaBieuPage />} />
+            <Route path="/bang-phan-cong" element={<BangPhanCongPage />} />
           </Routes>
         </main>
 
-        {/* Footer */}
-        <footer className="bg-gray-800 text-white py-4 mt-8">
-          <div className="container mx-auto px-4 text-center">
-            <p className="text-gray-400">© 2024 Quản Lý Trường Học</p>
-          </div>
-        </footer>
+        <footer className="dashboard-footer">Sắp Lịch <span>•</span> Nền tảng quản lý thời khóa biểu</footer>
       </div>
-    </BrowserRouter>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <HashRouter>
+      <DashboardLayout />
+    </HashRouter>
   );
 }
 

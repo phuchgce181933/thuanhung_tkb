@@ -18,15 +18,6 @@ const giaoVienSchema = new mongoose.Schema({
     required: [true, 'Họ tên không được để trống'],
     trim: true
   },
-  email: {
-    type: String,
-    trim: true,
-    lowercase: true
-  },
-  soDienThoai: {
-    type: String,
-    trim: true
-  },
   chuyenMon: {
     type: [chuyenMonSchema],
     required: true,
@@ -65,6 +56,6 @@ const giaoVienSchema = new mongoose.Schema({
 });
 
 // Index for searching
-giaoVienSchema.index({ hoTen: 'text', email: 'text' });
+giaoVienSchema.index({ hoTen: 'text' });
 
 module.exports = mongoose.model('GiaoVien', giaoVienSchema);

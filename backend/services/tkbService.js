@@ -148,7 +148,46 @@ function scoreGV(gv, slot, gvBusy, gvBuoiSet, respectNV = true) {
   if (!nv.buoiUuTien || nv.buoiUuTien === 'ca_hai' || nv.buoiUuTien === slot.buoi) {
     score += 100;
   } else {
-    score -= 50;
+    // Buổi KHÔNG khớp buoiUuTien (GV yêu cầu sáng/chieu cụ thể)
+    // Phạt CỰC NẶNG để gần như không bao giờ chọn (trừ khi tuyệt đối cần thiết)
+    score -= respectNV ? 5000 : 500;
+  }
+
+  // === CÂN BẰNG SÁNG/CHIỀU KHI buoiUuTien = 'ca_hai' ===
+  // Mục tiêu: GV đăng ký "cả hai" buổi phải được phân bổ đều sáng + chiều,
+  // không bị dồn toàn bộ vào 1 buổi. Nếu GV đã có nhiều buổi cùng loại vượt quá
+  // "phần của mình", phạt rất nặng để buộc thuật toán ưu tiên buổi còn lại.
+  if (nv.buoiUuTien === 'ca_hai' && gvBuoiSet && gvBuoiSet.size > 0) {
+    let sangCount = 0;
+    let chieuCount = 0;
+    for (const sk of gvBuoiSet) {
+      const [_, buoi] = sk.split('-');
+      if (buoi === 'sang') sangCount++;
+      else if (buoi === 'chieu') chieuCount++;
+    }
+    const total = sangCount + chieuCount;
+    const imbalance = Math.abs(sangCount - chieuCount);
+    // Phạt nếu GV đang dồn về 1 buổi (mất cân bằng)
+    if (slot.buoi === 'sang' && sangCount > chieuCount && total >= 2) {
+      // Đang dồn sáng - chọn thêm sáng càng phạt nặng
+      score -= respectNV ? (sangCount - chieuCount) * 150 : 50;
+    } else if (slot.buoi === 'chieu' && chieuCount > sangCount && total >= 2) {
+      // Đang dồn chiều - chọn thêm chiều càng phạt nặng
+      score -= respectNV ? (chieuCount - sangCount) * 150 : 50;
+    }
+    // Thưởng cho buổi đang thiếu để cân bằng
+    if (total >= 1 && sangCount > chieuCount && slot.buoi === 'chieu') {
+      score += respectNV ? (sangCount - chieuCount) * 80 : 20;
+    } else if (total >= 1 && chieuCount > sangCount && slot.buoi === 'sang') {
+      score += respectNV ? (chieuCount - sangCount) * 80 : 20;
+    }
+  }
+
+  // === PHẠT NẶNG KHI ĐÃ ĐỦ BUỔI NHƯNG VẪN MUỐN MỞ BUỔI MỚI ===
+  // Nếu buoiUuTien='ca_hai' và đã đủ số buổi, mỗi buổi mới là vi phạm
+  if (nv.buoiUuTien === 'ca_hai' && nv.soBuoiToiDa && gvBuoiSet.size >= nv.soBuoiToiDa) {
+    // Phạt RẤT nặng để không mở buổi mới (trừ khi còn slot trống cùng buổi cũ)
+    score -= respectNV ? 600 : 100;
   }
 
   // Cân bằng tải (ít tiết hơn = ưu tiên cao hơn)
@@ -1137,6 +1176,178 @@ function optimizeSessions(lopSchedulesData, giaoViens, gvBusy, gvBuoiSet, gvThuS
     gvCurrentSessions.set(gvId, currentSessionSet);
   }
 
+  // === VÒNG LẶP CÂN BẰNG SÁNG/CHIỀU CHO buoiUuTien='ca_hai' ===
+  // Mục tiêu: GV đăng ký "cả hai buổi" nhưng đang bị dồn vào 1 buổi
+  // (VD: 4 buổi sáng, 0 buổi chiều) → cố gắng dời 1 block buổi đang dồn sang buổi kia.
+  let canBangSangChieuMoves = 0;
+
+  // Helper local: xây lại busy set cho 1 GV từ lopSchedulesData hiện tại
+  const canBangBusyByGV = (gvId) => {
+    const set = new Set();
+    for (const data of lopSchedulesData) {
+      for (const ngay of data.lopSchedule) {
+        for (const tiet of ngay.tiets) {
+          if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+            set.add(createSlotKey(ngay.thu, ngay.buoi, tiet.tiet));
+          }
+        }
+      }
+    }
+    return set;
+  };
+
+  for (const gv of giaoViens) {
+    const gvId = gv._id.toString();
+    const nv = gv.nguyenVong || {};
+    if (nv.buoiUuTien !== 'ca_hai') continue;
+
+    const sessions = gvCurrentSessions.get(gvId) || new Set();
+    let sangCount = 0, chieuCount = 0;
+    const sangSessions = [], chieuSessions = [];
+    for (const sk of sessions) {
+      const [thuStr, buoi] = sk.split('-');
+      if (buoi === 'sang') { sangCount++; sangSessions.push(sk); }
+      else if (buoi === 'chieu') { chieuCount++; chieuSessions.push(sk); }
+    }
+
+    // Nếu mất cân bằng (chênh lệch >= 2): cố gắng dời 1 block
+    if (Math.abs(sangCount - chieuCount) >= 2) {
+      const fromSessions = sangCount > chieuCount ? sangSessions : chieuSessions;
+      const targetBuoi = sangCount > chieuCount ? 'chieu' : 'sang';
+
+      for (const fromKey of fromSessions) {
+        const [fromThuStr, fromBuoi] = fromKey.split('-');
+        const fromThu = parseInt(fromThuStr);
+
+        // Lấy tiết của GV trong session này
+        const items = [];
+        for (const data of lopSchedulesData) {
+          const ngay = data.lopSchedule.find(n => n.thu === fromThu && n.buoi === fromBuoi);
+          if (ngay) {
+            for (const tiet of ngay.tiets) {
+              if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                items.push({
+                  lopId: data.lop._id.toString(),
+                  thu: fromThu, buoi: fromBuoi, tiet: tiet.tiet,
+                  chuyenMon: tiet.chuyenMon
+                });
+              }
+            }
+          }
+        }
+        if (items.length === 0) continue;
+
+        // Tìm session đích trống (cùng thứ hoặc khác thứ đều được)
+        const candidateDefKeys = [];
+        for (const thu of TKB_CONFIG.weekdays) {
+          if (thu === fromThu) continue;
+          candidateDefKeys.push(`${thu}-${targetBuoi}`);
+        }
+
+        let movedAny = false;
+        for (const defKey of candidateDefKeys) {
+          if (movedAny) break;
+          const [defThuStr, defBuoi] = defKey.split('-');
+          const defThu = parseInt(defThuStr);
+          // Skip thứ nghỉ
+          if (Array.isArray(nv.thuNghi) && nv.thuNghi.includes(defThu)) continue;
+          // Skip nếu đã có session này
+          if (sessions.has(defKey)) continue;
+
+          const slots = findAvailableSlotsInSession(defThu, defBuoi, gv, items[0].lopId, lopSchedulesData, canBangBusyByGV(gvId));
+          if (slots.length === 0) continue;
+
+          for (const slot of slots) {
+            const gvBusyForGV = canBangBusyByGV(gvId);
+            const validation = tryMoveSingleTietOnData(
+              lopSchedulesData, items[0], slot.thu, slot.buoi, slot.tiet, gv, gvBusyForGV
+            );
+            if (!validation.ok) continue;
+            applyMoveSingleTietOnData(lopSchedulesData, items[0], slot.thu, slot.buoi, slot.tiet, gv);
+            totalMoves++;
+            canBangSangChieuMoves++;
+            movedAny = true;
+            break;
+          }
+        }
+        if (movedAny) break;
+      }
+    }
+  }
+
+  // === VÒNG LẶP ĐẢM BẢO buoiUuTien CỤ THỂ (sang/chiec) ===
+  // Nếu GV yêu cầu buổi cụ thể (không phải ca_hai) nhưng vẫn bị xếp tiết sai buổi
+  // → cố gắng MOVE tiết đó sang buổi đúng.
+  let fixBuoiUuTienMoves = 0;
+
+  // Helper local: xây lại busy set cho 1 GV từ lopSchedulesData hiện tại
+  const fixBusyByGV = (gvId) => {
+    const set = new Set();
+    for (const data of lopSchedulesData) {
+      for (const ngay of data.lopSchedule) {
+        for (const tiet of ngay.tiets) {
+          if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+            set.add(createSlotKey(ngay.thu, ngay.buoi, tiet.tiet));
+          }
+        }
+      }
+    }
+    return set;
+  };
+
+  for (const gv of giaoViens) {
+    const gvId = gv._id.toString();
+    const nv = gv.nguyenVong || {};
+    if (!nv.buoiUuTien || nv.buoiUuTien === 'ca_hai') continue;
+
+    const targetBuoi = nv.buoiUuTien; // 'sang' hoặc 'chieu'
+
+    // Tìm tiết đang sai buổi
+    const wrongBuoiItems = [];
+    for (const data of lopSchedulesData) {
+      for (const ngay of data.lopSchedule) {
+        if (ngay.buoi === targetBuoi) continue; // bỏ tiết đúng buổi
+        for (const tiet of ngay.tiets) {
+          if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+            wrongBuoiItems.push({
+              lopId: data.lop._id.toString(),
+              thu: ngay.thu, buoi: ngay.buoi, tiet: tiet.tiet,
+              chuyenMon: tiet.chuyenMon
+            });
+          }
+        }
+      }
+    }
+
+    // Thử move từng tiết sai buổi
+    for (const item of wrongBuoiItems) {
+      // Tìm slot trống buổi đúng, khác thứ, không phải chào cờ
+      let moved = false;
+      for (const defThu of TKB_CONFIG.weekdays) {
+        if (moved) break;
+        // Bỏ thứ nghỉ
+        if (Array.isArray(nv.thuNghi) && nv.thuNghi.includes(defThu)) continue;
+        // Bỏ cùng thứ (slot đó vẫn sai buổi)
+        if (defThu === item.thu) continue;
+
+        const slots = findAvailableSlotsInSession(defThu, targetBuoi, gv, item.lopId, lopSchedulesData, fixBusyByGV(gvId));
+        if (slots.length === 0) continue;
+
+        for (const slot of slots) {
+          const validation = tryMoveSingleTietOnData(
+            lopSchedulesData, item, slot.thu, slot.buoi, slot.tiet, gv, fixBusyByGV(gvId)
+          );
+          if (!validation.ok) continue;
+          applyMoveSingleTietOnData(lopSchedulesData, item, slot.thu, slot.buoi, slot.tiet, gv);
+          totalMoves++;
+          fixBuoiUuTienMoves++;
+          moved = true;
+          break;
+        }
+      }
+    }
+  }
+
   // === VÒNG LẶP CẢI THIỆN: Hill Climbing cho các GV còn lại ===
   const MAX_ITERATIONS = 30;
   const MAX_NO_IMPROVE = 3;
@@ -1332,14 +1543,29 @@ async function autoGenerateTKB(namHoc) {
         }
       }
 
-      // Greedy: chọn sessions có capacity cao nhất để đủ required tiết
+      // Greedy: chọn sessions ưu tiên đúng theo NV buoiUuTien
+      // - 'sang'  → ưu tiên buổi sáng trước
+      // - 'chieu' → ưu tiên buổi chiều trước
+      // - 'ca_hai' hoặc không có → capacity cao trước
+      const buoiSortPriority = (key) => {
+        const buoi = key.includes('-sang') ? 'sang' : 'chieu';
+        if (nv.buoiUuTien === 'sang' && buoi === 'sang') return 0;
+        if (nv.buoiUuTien === 'sang' && buoi === 'chieu') return 2;
+        if (nv.buoiUuTien === 'chieu' && buoi === 'chieu') return 0;
+        if (nv.buoiUuTien === 'chieu' && buoi === 'sang') return 2;
+        return 1; // ca_hai hoặc không có NV
+      };
+
       const sortedSessions = [...sessionCapacity.entries()]
         .filter(([_, cap]) => cap > 0)
         .sort((a, b) => {
-          // Ưu tiên capacity cao
+          // Ưu tiên buổi đúng NV trước
+          const pa = buoiSortPriority(a[0]);
+          const pb = buoiSortPriority(b[0]);
+          if (pa !== pb) return pa - pb;
+          // Sau đó theo capacity cao
           if (b[1] !== a[1]) return b[1] - a[1];
-          // Sáng trước chiều
-          return a[0].includes('sang') ? -1 : 1;
+          return 0;
         });
 
       const preferred = new Set();
@@ -1352,12 +1578,15 @@ async function autoGenerateTKB(namHoc) {
 
       // Nếu preferred sessions > desired, thu hẹp
       if (preferred.size > desired) {
-        // Chỉ giữ lại desired sessions có capacity cao nhất
+        // Chỉ giữ lại desired sessions có buổi ưu tiên + capacity cao nhất
         const sorted = [...preferred].sort((a, b) => {
+          const pa = buoiSortPriority(a);
+          const pb = buoiSortPriority(b);
+          if (pa !== pb) return pa - pb;
           const capA = sessionCapacity.get(a) || 0;
           const capB = sessionCapacity.get(b) || 0;
           if (capB !== capA) return capB - capA;
-          return a.includes('sang') ? -1 : 1;
+          return 0;
         });
         preferred.clear();
         for (let i = 0; i < desired; i++) {
@@ -1402,6 +1631,10 @@ async function autoGenerateTKB(namHoc) {
       const lopSchedule = [];
       const lopUsedSlots = new Set(); // các slot đã xếp cho lớp này
       const lopSlotOwner = new Map(); // slotKey -> {gvId, cm, tiet, thu, buoi} (cho swap phase)
+      // === RÀNG BUỘC "1 BUỔI CHỈ 1 MÔN" ===
+      // Map key = `${thu}-${buoi}-${tenChuyenMon}` → số tiết đã xếp của môn đó trong buổi đó
+      // Cho phép tối đa 1 tiết/môn/buổi để tránh học 1 môn liên tục
+      const lopBuoiMonCount = new Map();
       const lopId = lop._id.toString();
       slotOwnerByClass.set(lopId, lopSlotOwner);
 
@@ -1447,6 +1680,13 @@ async function autoGenerateTKB(namHoc) {
           let bestScore = -Infinity;
           for (const slot of allSlots) {
             if (lopUsedSlots.has(slot.key)) continue;
+            // === RÀNG BUỘC "1 BUỔI CHỈ 1 MÔN" (HARD CONSTRAINT) ===
+            // Mỗi buổi (sáng/chiều của 1 thứ) chỉ được học tối đa 1 tiết của 1 môn.
+            // Tránh tình trạng học 1 môn liên tục nhiều tiết trong cùng buổi.
+            const buoiMonKey = `${slot.thu}-${slot.buoi}-${cm.tenChuyenMon}`;
+            if ((lopBuoiMonCount.get(buoiMonKey) || 0) >= 1) {
+              continue; // skip slot - môn này đã có tiết trong buổi này rồi
+            }
             // Mặc định skip slot GV đã bận. Khi allowBusy=true (Bước 3 bắt buộc),
             // vẫn cho phép trùng nhưng phạt điểm rất nặng để ưu tiên slot không trùng.
             const isBusy = gvBusy.get(gvId).has(slot.key);
@@ -1464,16 +1704,56 @@ async function autoGenerateTKB(namHoc) {
             const buoiKey = `${slot.thu}-${slot.buoi}`;
             const daCoCungBuoi = gvBuoiSet.get(gvId).has(buoiKey);
             const daCoCungThu = gvThuSet.get(gvId).has(slot.thu);
-            if (daCoCungBuoi) {
-              score += 50; // rất thưởng - xếp tiết tiếp theo vào cùng buổi đang dạy
-            } else if (daCoCungThu) {
-              score += 30; // thưởng vừa - đã dạy ngày này, thêm buổi kia để gom sáng+chiều
+            const nv2 = gv.nguyenVong || {};
+
+            // === CÂN BẰNG SÁNG/CHIỀU TRONG GOM BUỔI ===
+            // Gom buổi nào phụ thuộc vào NV:
+            //  - buoiUuTien = 'sang' → chỉ thưởng khi gom buổi sáng
+            //  - buoiUuTien = 'chieu' → chỉ thưởng khi gom buổi chiều
+            //  - buoiUuTien = 'ca_hai' → cân bằng: nếu đang dồn sáng thì THƯỞNG gom chiều, PHẠT gom sáng
+            let nhomBuoiReward = 0;
+            if (nv2.buoiUuTien === 'sang' && slot.buoi === 'sang' && daCoCungBuoi) {
+              nhomBuoiReward = 50;
+            } else if (nv2.buoiUuTien === 'chieu' && slot.buoi === 'chieu' && daCoCungBuoi) {
+              nhomBuoiReward = 50;
+            } else if (nv2.buoiUuTien === 'ca_hai' && daCoCungBuoi) {
+              // Cân bằng: đếm sáng/chiều hiện tại
+              let sangCount2 = 0, chieuCount2 = 0;
+              for (const sk of gvBuoiSet.get(gvId)) {
+                const [_, b] = sk.split('-');
+                if (b === 'sang') sangCount2++; else if (b === 'chieu') chieuCount2++;
+              }
+              // Nếu gom buổi đang dồn thì phạt, gom buổi còn thiếu thì thưởng
+              if (slot.buoi === 'sang' && sangCount2 > chieuCount2) {
+                nhomBuoiReward = -50; // phạt gom thêm sáng
+              } else if (slot.buoi === 'chieu' && chieuCount2 > sangCount2) {
+                nhomBuoiReward = -50; // phạt gom thêm chiều
+              } else {
+                nhomBuoiReward = 50; // thưởng gom buổi đang thiếu hoặc cân bằng
+              }
+            } else if (!nv2.buoiUuTien || nv2.buoiUuTien === 'ca_hai' || nv2.buoiUuTien === slot.buoi) {
+              // Không có NV hoặc cả hai buổi → thưởng mặc định
+              nhomBuoiReward = daCoCungBuoi ? 50 : 0;
+            }
+            score += nhomBuoiReward;
+
+            // Thưởng vừa cho cùng thứ (gom sáng + chiều cùng ngày) - CHỈ khi phù hợp NV
+            if (daCoCungThu && !daCoCungBuoi) {
+              // Gom thêm buổi cùng ngày: chỉ thưởng nếu NV cho phép cả 2 buổi
+              // hoặc buổi đang thêm khớp với buoiUuTien
+              if (!nv2.buoiUuTien || nv2.buoiUuTien === 'ca_hai' || nv2.buoiUuTien === slot.buoi) {
+                score += 30;
+              }
             }
 
             const nv = gv.nguyenVong || {};
             // Phạt rất nặng khi mở buổi mới mà đã đạt/gần đạt max buổi
             if (!daCoCungBuoi && nv.soBuoiToiDa && gvBuoiSet.get(gvId).size >= nv.soBuoiToiDa - 1) {
               score -= 100;
+            }
+            // Phạt nếu mở buổi không khớp NV buoiUuTien
+            if (!daCoCungBuoi && nv.buoiUuTien && nv.buoiUuTien !== 'ca_hai' && nv.buoiUuTien !== slot.buoi) {
+              score -= respectNV ? 300 : 80;
             }
 
             // BONUS LỚN cho slot nằm trong preferred sessions (từ pre-solver)
@@ -1500,6 +1780,10 @@ async function autoGenerateTKB(namHoc) {
           gvBusy.get(gvId).add(slot.key);
           gvBuoiSet.get(gvId).add(`${slot.thu}-${slot.buoi}`);
           gvThuSet.get(gvId).add(slot.thu);
+
+          // === CẬP NHẬT "1 BUỔI 1 MÔN" ===
+          const buoiMonKey = `${slot.thu}-${slot.buoi}-${cm.tenChuyenMon}`;
+          lopBuoiMonCount.set(buoiMonKey, (lopBuoiMonCount.get(buoiMonKey) || 0) + 1);
 
           let ngay = lopSchedule.find(n => n.thu === slot.thu && n.buoi === slot.buoi);
           if (!ngay) {
@@ -2136,6 +2420,345 @@ async function exportTKBToExcel(namHoc) {
   return await workbook.xlsx.writeBuffer();
 }
 
+/**
+ * Fill in các tiết bị thiếu cho các lớp sau khi user kéo thả với GV bị khóa
+ * - lockedGVs: danh sách GV được bảo vệ (không xếp vào slot đã có)
+ * - lockedSlots: Map<gvId, [{thu, buoi, tiet, lopId}]> - các slot đã lock
+ * Logic:
+ *   1. Tìm các lớp thiếu tiết
+ *   2. Với mỗi lớp, xếp các slot trống, tránh slot bị lock
+ */
+async function fillMissingPeriods(namHoc, lockedGVs = [], lockedSlots = new Map()) {
+  const allTkbs = await ThoiKhoaBieu.find({ namHoc }).populate({
+    path: 'lop',
+    populate: { path: 'khoi' }
+  });
+  const allGVs = await GiaoVien.find({});
+  const allLops = await Lop.find({}).populate('khoi');
+
+  // GV busy map
+  const gvBusy = new Map();
+  for (const gv of allGVs) {
+    gvBusy.set(gv._id.toString(), new Set());
+  }
+  for (const tkb of allTkbs) {
+    for (const ngay of tkb.ngayTrongTuan) {
+      for (const tiet of ngay.tiets) {
+        if (tiet.giaoVien) {
+          const key = `${ngay.thu}-${ngay.buoi}-${tiet.tiet}`;
+          if (!gvBusy.has(tiet.giaoVien.toString())) {
+            gvBusy.set(tiet.giaoVien.toString(), new Set());
+          }
+          gvBusy.get(tiet.giaoVien.toString()).add(key);
+        }
+      }
+    }
+  }
+
+  // GV by chuyên môn
+  const gvByChuyenMon = new Map();
+  for (const gv of allGVs) {
+    for (const cm of gv.chuyenMon || []) {
+      if (!gvByChuyenMon.has(cm.tenChuyenMon)) {
+        gvByChuyenMon.set(cm.tenChuyenMon, []);
+      }
+      gvByChuyenMon.get(cm.tenChuyenMon).push(gv);
+    }
+  }
+
+  let filled = 0;
+  const errors = [];
+
+  // Tất cả slots khả dụng
+  const allSlots = [];
+  for (const thu of TKB_CONFIG.weekdays) {
+    for (const [buoi, config] of Object.entries(TKB_CONFIG.sessions)) {
+      const tiets = [];
+      for (let t = config.tietBatDau; t <= config.tietKetThuc; t++) {
+        if (buoi === 'sang' && thu === 2 && t === 1) continue; // chào cờ
+        tiets.push(t);
+      }
+      for (const tiet of tiets) {
+        allSlots.push({ thu, buoi, tiet, key: `${thu}-${buoi}-${tiet}` });
+      }
+    }
+  }
+
+  // Lặp qua các lớp
+  for (const tkb of allTkbs) {
+    const lopId = tkb.lop._id.toString();
+    const khoi = tkb.lop.khoi;
+    const requiredTiet = (khoi.cauHinhTKB || []).reduce((s, c) => s + c.soTiet, 0);
+    const currentTiet = tkb.ngayTrongTuan.reduce((s, n) => s + n.tiets.length, 0);
+
+    let missing = requiredTiet - currentTiet;
+    if (missing <= 0) continue;
+
+    // Lấy các slot đã dùng
+    const usedSlots = new Set();
+    for (const ngay of tkb.ngayTrongTuan) {
+      for (const tiet of ngay.tiets) {
+        usedSlots.add(`${ngay.thu}-${ngay.buoi}-${tiet.tiet}`);
+      }
+    }
+
+    // Lấy các chuyên môn cần xếp (thiếu môn nào xếp môn đó)
+    // Đếm tiết hiện tại theo môn
+    const currentByMon = {};
+    for (const ngay of tkb.ngayTrongTuan) {
+      for (const tiet of ngay.tiets) {
+        currentByMon[tiet.chuyenMon] = (currentByMon[tiet.chuyenMon] || 0) + 1;
+      }
+    }
+
+    // Các môn cần thêm
+    const needMons = [];
+    for (const c of khoi.cauHinhTKB || []) {
+      const have = currentByMon[c.tenChuyenMon] || 0;
+      const need = c.soTiet - have;
+      for (let i = 0; i < need; i++) {
+        needMons.push(c.tenChuyenMon);
+      }
+    }
+
+    // Sort môn theo nhiều tiết trước
+    needMons.sort();
+
+    for (const mon of needMons) {
+      // Tìm GV có thể dạy môn này
+      const gvList = (gvByChuyenMon.get(mon) || [])
+        .filter(g => !lockedGVs.includes(g._id.toString())) // tránh GV bị khóa
+        .sort((a, b) => {
+          const aCount = gvBusy.get(a._id.toString())?.size || 0;
+          const bCount = gvBusy.get(b._id.toString())?.size || 0;
+          return aCount - bCount;
+        });
+
+      let placed = false;
+      for (const gv of gvList) {
+        // Tìm slot trống
+        for (const slot of allSlots) {
+          if (usedSlots.has(slot.key)) continue;
+          if (gvBusy.get(gv._id.toString())?.has(slot.key)) continue;
+
+          // Tìm hoặc tạo ngày
+          let ngay = tkb.ngayTrongTuan.find(
+            n => n.thu === slot.thu && n.buoi === slot.buoi
+          );
+          if (!ngay) {
+            ngay = { thu: slot.thu, buoi: slot.buoi, tiets: [] };
+            tkb.ngayTrongTuan.push(ngay);
+          }
+          
+          // Check mỗi buổi chỉ 1 môn
+          const daCoMon = ngay.tiets.find(t => t.chuyenMon === mon);
+          if (daCoMon) continue;
+
+          // Đặt tiết
+          ngay.tiets.push({
+            tiet: slot.tiet,
+            giaoVien: gv._id,
+            chuyenMon: mon
+          });
+          ngay.tiets.sort((a, b) => a.tiet - b.tiet);
+          
+          usedSlots.add(slot.key);
+          gvBusy.get(gv._id.toString()).add(slot.key);
+          
+          filled++;
+          placed = true;
+          break;
+        }
+        if (placed) break;
+      }
+
+      if (!placed) {
+        errors.push(`Lớp ${tkb.lop.tenLop}: Không thể xếp môn ${mon}`);
+      }
+    }
+
+    await tkb.save();
+  }
+
+  return { filled, errors };
+}
+
+/**
+ * Rearrange Atomic: Sau khi applyBatch đã save TKB, hàm này phát hiện conflict
+ * (GV dạy 2 lớp cùng slot, mỗi buổi 1 môn bị vi phạm, ...) và cố gắng sắp xếp lại
+ * chỉ các slot bị conflict. Giữ nguyên các slot đã khóa.
+ *
+ * @param {string} namHoc
+ * @param {Object} options
+ * @param {string[]} options.lockedGVs - danh sách GV id được bảo vệ tuyệt đối
+ * @returns {Promise<{rearranged: number, conflicts: Array, warnings: Array}>}
+ */
+async function rearrangeAtomic(namHoc, options = {}) {
+  const { lockedGVs = [] } = options;
+  const allTkbs = await ThoiKhoaBieu.find({ namHoc }).populate({
+    path: 'lop',
+    populate: { path: 'khoi' }
+  });
+  const allGVs = await GiaoVien.find({});
+
+  // Map gvId -> { hoTen, chuyenMonList } để hiển thị thân thiện
+  const gvInfo = new Map();
+  for (const gv of allGVs) {
+    gvInfo.set(gv._id.toString(), {
+      hoTen: gv.hoTen,
+      chuyenMonList: (gv.chuyenMon || []).map(c => c.tenChuyenMon).join(', ')
+    });
+  }
+  const gvTen = (id) => {
+    const info = gvInfo.get(id);
+    return info ? info.hoTen : id;
+  };
+  const gvCM = (id) => {
+    const info = gvInfo.get(id);
+    return info ? info.chuyenMonList : '';
+  };
+
+  // Build GV busy map từ TKB hiện tại
+  const gvBusy = new Map();
+  for (const gv of allGVs) {
+    gvBusy.set(gv._id.toString(), new Set());
+  }
+  for (const tkb of allTkbs) {
+    for (const ngay of tkb.ngayTrongTuan) {
+      for (const tiet of ngay.tiets) {
+        if (tiet.giaoVien) {
+          const key = `${ngay.thu}-${ngay.buoi}-${tiet.tiet}`;
+          gvBusy.get(tiet.giaoVien.toString()).add(key);
+        }
+      }
+    }
+  }
+
+  const conflicts = [];
+  const warnings = [];
+  let rearranged = 0;
+
+  // Bước 1: Phát hiện conflict - GV dạy 2 lớp cùng slot
+  for (const tkb of allTkbs) {
+    for (const ngay of tkb.ngayTrongTuan) {
+      for (const tiet of ngay.tiets) {
+        if (!tiet.giaoVien) continue;
+        const gvId = tiet.giaoVien.toString();
+        if (lockedGVs.includes(gvId)) continue; // GV khóa: bỏ qua
+        const slotKey = `${ngay.thu}-${ngay.buoi}-${tiet.tiet}`;
+        // Tìm slot trùng ở TKB khác
+        for (const otherTkb of allTkbs) {
+          if (otherTkb._id.toString() === tkb._id.toString()) continue;
+          for (const otherNgay of otherTkb.ngayTrongTuan) {
+            for (const otherTiet of otherNgay.tiets) {
+              if (!otherTiet.giaoVien) continue;
+              if (otherTiet.giaoVien.toString() !== gvId) continue;
+              if (otherNgay.thu !== ngay.thu || otherNgay.buoi !== ngay.buoi || otherTiet.tiet !== tiet.tiet) continue;
+              // Tìm thấy conflict
+              conflicts.push({
+                type: 'GV_TRUNG_LICH',
+                gvId,
+                gvTen: gvTen(gvId),
+                gvChuyenMon: gvCM(gvId),
+                thu: ngay.thu,
+                buoi: ngay.buoi,
+                tiet: tiet.tiet,
+                chuyenMon: tiet.chuyenMon,
+                classes: [tkb.lop.tenLop, otherTkb.lop.tenLop]
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Bước 2: Nhóm conflict theo (thu, buoi, tiet, gvId)
+  const conflictGroups = new Map();
+  for (const c of conflicts) {
+    const key = `${c.gvId}-${c.thu}-${c.buoi}-${c.tiet}`;
+    if (!conflictGroups.has(key)) conflictGroups.set(key, []);
+    conflictGroups.get(key).push(c);
+  }
+
+  // Bước 3: Với mỗi nhóm, thử đổi slot của các lớp không ưu tiên
+  // Quy tắc: ưu tiên giữ slot cho lớp có lopId trong lockedLops (nếu có), hoặc giữ slot cho TKB đầu tiên trong nhóm
+  for (const [key, group] of conflictGroups) {
+    if (group.length < 2) continue;
+    const [gvId, thu, buoi, tiet] = key.split('-');
+    // Lấy TKB của các lớp trong group
+    const tkbInGroup = [];
+    for (const c of group) {
+      const tkb = allTkbs.find(t => t.lop.tenLop === c.classes[0]);
+      if (tkb) tkbInGroup.push({ tkb, tenLop: c.classes[0] });
+    }
+    if (tkbInGroup.length < 2) continue;
+
+    // Giữ lại TKB đầu tiên, tìm slot mới cho các TKB còn lại
+    const keepTkb = tkbInGroup[0];
+    const moveTkbs = tkbInGroup.slice(1);
+
+    // Tất cả slot khả dụng (cùng buổi, các thứ khác)
+    const candidateSlots = [];
+    for (const otherThu of TKB_CONFIG.weekdays) {
+      if (otherThu === parseInt(thu)) continue; // bỏ qua slot conflict
+      candidateSlots.push({ thu: otherThu, buoi, tiet: parseInt(tiet) });
+    }
+
+    for (const { tkb: moveTkb, tenLop } of moveTkbs) {
+      let moved = false;
+      // Tìm tiết đang có GV conflict trong TKB
+      for (const ngay of moveTkb.ngayTrongTuan) {
+        if (ngay.thu !== parseInt(thu) || ngay.buoi !== buoi) continue;
+        const idx = ngay.tiets.findIndex(t => t.tiet === parseInt(tiet) && t.giaoVien?.toString() === gvId);
+        if (idx === -1) continue;
+        const conflictTiet = ngay.tiets[idx];
+
+        // Tìm slot mới cho GV này (cùng buổi, khác thứ, GV không bận)
+        for (const slot of candidateSlots) {
+          const slotKey = `${slot.thu}-${slot.buoi}-${slot.tiet}`;
+          if (gvBusy.get(gvId).has(slotKey)) continue;
+          // Check slot đó có trống trong TKB moveTkb không
+          const slotNgay = moveTkb.ngayTrongTuan.find(n => n.thu === slot.thu && n.buoi === slot.buoi);
+          if (slotNgay?.tiets.some(t => t.tiet === slot.tiet)) continue;
+          // Đổi slot
+          ngay.tiets.splice(idx, 1);
+          // Cập nhật busy
+          gvBusy.get(gvId).delete(`${thu}-${buoi}-${tiet}`);
+          gvBusy.get(gvId).add(slotKey);
+          // Thêm vào ngày mới
+          let newNgay = moveTkb.ngayTrongTuan.find(n => n.thu === slot.thu && n.buoi === slot.buoi);
+          if (!newNgay) {
+            newNgay = { thu: slot.thu, buoi: slot.buoi, tiets: [] };
+            moveTkb.ngayTrongTuan.push(newNgay);
+          }
+          newNgay.tiets.push({
+            tiet: slot.tiet,
+            giaoVien: conflictTiet.giaoVien,
+            chuyenMon: conflictTiet.chuyenMon
+          });
+          newNgay.tiets.sort((a, b) => a.tiet - b.tiet);
+          // Xóa ngày rỗng
+          if (ngay.tiets.length === 0) {
+            moveTkb.ngayTrongTuan = moveTkb.ngayTrongTuan.filter(n => !(n.thu === ngay.thu && n.buoi === ngay.buoi));
+          }
+          await moveTkb.save();
+          warnings.push(`${gvTen(gvId)}: đã chuyển tiết ${tiet} môn ${conflictTiet.chuyenMon} (lớp ${tenLop}) từ thứ ${thu} sang thứ ${slot.thu}`);
+          rearranged++;
+          moved = true;
+          break;
+        }
+        if (moved) break;
+      }
+      if (!moved) {
+        warnings.push(`Không thể tự động sắp xếp lại tiết cho lớp ${tenLop} - GV ${gvTen(gvId)} (${gvCM(gvId)})`);
+      }
+    }
+  }
+
+  return { rearranged, conflicts, warnings };
+}
+
 module.exports = {
   autoGenerateTKB,
   getTKBByLop,
@@ -2143,5 +2766,7 @@ module.exports = {
   checkGVConflicts,
   getChuyenMonByKhoi,
   exportTKBToExcel,
+  fillMissingPeriods,
+  rearrangeAtomic,
   TKB_CONFIG
 };
