@@ -44,8 +44,8 @@ const khoiController = {
   // Tạo mới khối
   create: async (req, res) => {
     try {
-      const { tenKhoi, moTa, thuTu } = req.body;
-      const khoi = new Khoi({ tenKhoi, moTa, thuTu });
+      const { tenKhoi, thuTu } = req.body;
+      const khoi = new Khoi({ tenKhoi, thuTu });
       await khoi.save();
       res.status(201).json({
         success: true,
@@ -69,10 +69,10 @@ const khoiController = {
   // Cập nhật khối
   update: async (req, res) => {
     try {
-      const { tenKhoi, moTa, thuTu } = req.body;
+      const { tenKhoi, thuTu } = req.body;
       const khoi = await Khoi.findByIdAndUpdate(
         req.params.id,
-        { tenKhoi, moTa, thuTu },
+        { tenKhoi, thuTu },
         { new: true, runValidators: true }
       );
       if (!khoi) {

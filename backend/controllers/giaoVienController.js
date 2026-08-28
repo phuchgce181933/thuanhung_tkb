@@ -62,7 +62,7 @@ const giaoVienController = {
   // Tạo mới giáo viên
   create: async (req, res) => {
     try {
-      const { hoTen, email, soDienThoai, chuyenMon, trangThai, nguyenVong } = req.body;
+      const { hoTen, chuyenMon, trangThai, nguyenVong } = req.body;
       
       // Kiểm tra tên trùng
       const existing = await GiaoVien.findOne({ hoTen });
@@ -75,8 +75,6 @@ const giaoVienController = {
       
       const gv = new GiaoVien({
         hoTen,
-        email,
-        soDienThoai,
         chuyenMon,
         trangThai: trangThai || 'active',
         nguyenVong: nguyenVong || undefined
@@ -99,11 +97,11 @@ const giaoVienController = {
   // Cập nhật giáo viên
   update: async (req, res) => {
     try {
-      const { hoTen, email, soDienThoai, chuyenMon, trangThai, nguyenVong } = req.body;
+      const { hoTen, chuyenMon, trangThai, nguyenVong } = req.body;
       
       const gv = await GiaoVien.findByIdAndUpdate(
         req.params.id,
-        { hoTen, email, soDienThoai, chuyenMon, trangThai, nguyenVong },
+        { hoTen, chuyenMon, trangThai, nguyenVong },
         { new: true, runValidators: true }
       );
       
