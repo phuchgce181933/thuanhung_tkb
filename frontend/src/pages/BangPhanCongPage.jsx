@@ -187,7 +187,7 @@ function BangPhanCongPage() {
                 <td className="lesson-cell">{lesson}</td>
                 {DAYS.flatMap((day) => [lesson, lesson + 4].map((actualLesson) => {
                   const cell = getCell(teacher, day, actualLesson);
-                  const isHighlighted = (actualLesson === lesson && lesson === 1)
+                  const isHighlighted = (day === 2 && actualLesson === lesson && lesson === 1)
                     || (actualLesson === lesson + 4 && lesson === 4);
                   return <td key={`${day}-${actualLesson}`} className={`schedule-cell${isHighlighted ? ' highlighted' : ''}`}>{cell?.className || ''}</td>;
                 }))}
@@ -196,7 +196,7 @@ function BangPhanCongPage() {
           </tbody>
         </table>
       </div>
-      <p className="table-note"><span className="legend-empty" /> Ô xanh đánh dấu tiết 1 buổi sáng và tiết 4 buổi chiều.</p>
+      <p className="table-note"><span className="legend-empty" /> Ô xanh đánh dấu tiết 1 sáng Thứ hai và tiết 4 buổi chiều.</p>
     </div>
   );
 }

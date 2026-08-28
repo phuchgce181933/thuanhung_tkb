@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output and packaged apps
+dist/
+**/dist/
+release/
+
+# Local environment and secrets
+.env
+**/.env
+.env.*
+!.env.example
+
+# Logs and local caches
+*.log
+npm-debug.log*
+.vite/
+.cache/
+
+# Electron builder files
+.builder-debug.yml
+builder-effective-config.yaml
