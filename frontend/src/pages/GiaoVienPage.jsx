@@ -17,8 +17,6 @@ function GiaoVienPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [formData, setFormData] = useState({
     hoTen: '',
-    email: '',
-    soDienThoai: '',
     chuyenMon: [],
     trangThai: 'active',
     nguyenVong: {
@@ -71,8 +69,6 @@ function GiaoVienPage() {
     setEditingGV(gv);
     setFormData({
       hoTen: gv.hoTen,
-      email: gv.email || '',
-      soDienThoai: gv.soDienThoai || '',
       chuyenMon: gv.chuyenMon || [],
       trangThai: gv.trangThai || 'active',
       nguyenVong: gv.nguyenVong
@@ -101,8 +97,6 @@ function GiaoVienPage() {
     setEditingGV(null);
     setFormData({
       hoTen: '',
-      email: '',
-      soDienThoai: '',
       chuyenMon: [],
       trangThai: 'active',
       nguyenVong: emptyNguyenVong()
@@ -198,7 +192,6 @@ function GiaoVienPage() {
                 <div className="flex justify-between items-start mb-3">
                   <div>
                     <h3 className="font-bold text-lg text-gray-800">{gv.hoTen}</h3>
-                    <p className="text-sm text-gray-500">{gv.email || 'Chưa có email'}</p>
                   </div>
                   <span className={`px-2 py-1 rounded text-xs ${
                     gv.trangThai === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
@@ -288,32 +281,6 @@ function GiaoVienPage() {
                   />
                 </div>
                 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="email@example.com"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Số Điện Thoại
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.soDienThoai}
-                    onChange={(e) => setFormData({ ...formData, soDienThoai: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="0xxx xxx xxx"
-                  />
-                </div>
-
                 <div>
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-medium text-gray-700">

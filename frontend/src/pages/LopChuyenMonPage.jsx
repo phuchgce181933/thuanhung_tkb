@@ -156,7 +156,6 @@ function LopChuyenMonPage() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Lớp</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Sĩ số</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Môn học đã phân công</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Tổng tiết/tuần</th>
                 <th className="px-4 py-3 text-center text-sm font-medium text-gray-600">Thao tác</th>
@@ -170,7 +169,6 @@ function LopChuyenMonPage() {
                 return (
                   <tr key={lop._id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium">{lop.tenLop}</td>
-                    <td className="px-4 py-3 text-gray-600">{lop.siSo || '-'}</td>
                     <td className="px-4 py-3">
                       {monCount === 0 ? (
                         <span className="text-gray-400 italic">Chưa phân công</span>
