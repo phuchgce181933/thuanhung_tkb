@@ -62,10 +62,66 @@ const TONG_TIET_MOI_LOP = Object.values(TKB_CONFIG.chuyenMonMacDinh[1]).reduce((
 // Khối 1: 4+5+1+2+1+1+1+2+1 = 18 tiết
 // Khối 2-3: +2 (Khoa học) = 19-20 tiết
 
+// Giới hạn điều chuyển: 1 GV dư chỉ được nhận tối đa N tiết điều chuyển →
+// tránh 1 GV bị hút hết tiết thiếu của nhiều phân hiệu (ảnh hưởng lớp chính).
+const MAX_TIET_DIEU_CHUYEN_MOI_GV = 6;
+
 // ============== HÀM HỖ TRỢ ==============
 
 function createSlotKey(thu, buoi, tiet) {
   return `${thu}-${buoi}-${tiet}`;
+}
+
+/**
+ * Hai tiết có liền kề nhau về thời gian không?
+ * Trong cùng thứ, kể cả bắc cầu buổi: tiết 4 sáng ↔ tiết 5 chiều.
+ */
+function isKeTiet(thuA, buoiA, tietA, thuB, buoiB, tietB) {
+  if (thuA !== thuB) return false;
+  // Cùng buổi và N ↔ N+1
+  if (buoiA === buoiB && Math.abs(tietA - tietB) === 1) return true;
+  // Bắc cầu buổi: sáng tiết 4 ↔ chiều tiết 5
+  if (buoiA === 'sang' && buoiB === 'chieu' && tietA === 4 && tietB === 5) return true;
+  if (buoiA === 'chieu' && buoiB === 'sang' && tietA === 5 && tietB === 4) return true;
+  return false;
+}
+
+/**
+ * Kiểm tra tiết mục tiêu (targetThu, targetBuoi, targetTiet, targetLopId)
+ * có gây ra vi phạm "kế tiết khác phân hiệu" so với GV hay không.
+ *
+ * Logic: trong cùng thứ, tìm mọi tiết hiện có của GV nằm liền kề với tiết target.
+ * Nếu bất kỳ tiết liền kề nào thuộc lớp ở phân hiệu KHÁC với lớp target → vi phạm.
+ *
+ * @returns {{ok: true} | {ok: false, lyDo: string, phanHieuX: string, phanHieuY: string}}
+ */
+function checkKeTietPhanHieu(lopSchedulesData, gvId, targetLopId, targetThu, targetBuoi, targetTiet) {
+  const targetLop = lopSchedulesData.find(d => d.lop._id.toString() === targetLopId);
+  if (!targetLop) return { ok: true };
+  const targetPH = targetLop.lop.phanHieu;
+
+  for (const data of lopSchedulesData) {
+    for (const ngay of data.lopSchedule) {
+      if (ngay.thu !== targetThu) continue;
+      for (const tiet of ngay.tiets) {
+        if (!tiet.giaoVien || tiet.giaoVien.toString() !== gvId) continue;
+        if (!isKeTiet(ngay.thu, ngay.buoi, tiet.tiet, targetThu, targetBuoi, targetTiet)) continue;
+        // Tiết này liền kề với target → phải cùng phân hiệu
+        if (data.lop.phanHieu !== targetPH) {
+          return {
+            ok: false,
+            lyDo: 'ke_tiet_khac_phan_hieu',
+            phanHieuX: data.lop.phanHieu,
+            phanHieuY: targetPH,
+            lopKeTiet: data.lop.tenLop,
+            tietKeTiet: tiet.tiet,
+            buoiKeTiet: ngay.buoi
+          };
+        }
+      }
+    }
+  }
+  return { ok: true };
 }
 
 function getChuyenMonByKhoi(tenKhoi) {
@@ -261,6 +317,10 @@ function canMoveBlock(block, targetThu, targetBuoi, gv, lopSchedulesData, gvBusy
   if (Array.isArray(nv.thuNghi) && nv.thuNghi.includes(targetThu)) {
     return { ok: false, lyDo: 'thu_nghi' };
   }
+  // T6 đặc biệt: cả buổi chiều nghỉ
+  if (targetThu === 6 && targetBuoi === 'chieu') {
+    return { ok: false, lyDo: 't6_chieu_nghi' };
+  }
   const gvId = gv._id.toString();
   for (const item of block) {
     // Tiết phải hợp lệ với buổi đích (sáng 1-4, chiều 5-7).
@@ -288,6 +348,22 @@ function canMoveBlock(block, targetThu, targetBuoi, gv, lopSchedulesData, gvBusy
     if (targetBuoi === 'sang' && item.tiet === 1 && targetThu === 2) {
       return { ok: false, lyDo: 'chao_co' };
     }
+    // T6 SHL: tiết 4 sáng không được dạy
+    if (targetBuoi === 'sang' && targetThu === 6 && item.tiet === 4) {
+      return { ok: false, lyDo: 'shl_t6' };
+    }
+  }
+  // Check kế tiết khác phân hiệu (sau khi move giả định)
+  const cloned = cloneSchedulesData(lopSchedulesData);
+  for (const item of block) {
+    const cloneLopData = cloned.find(d => d.lop._id.toString() === item.lopId);
+    if (!cloneLopData) continue;
+    const oldNgay = cloneLopData.lopSchedule.find(n => n.thu === item.thu && n.buoi === item.buoi);
+    if (oldNgay) oldNgay.tiets = oldNgay.tiets.filter(t => t.tiet !== item.tiet);
+  }
+  for (const item of block) {
+    const check = checkKeTietPhanHieu(cloned, gvId, item.lopId, targetThu, targetBuoi, item.tiet);
+    if (!check.ok) return { ok: false, lyDo: 'ke_tiet_khac_phan_hieu' };
   }
   return { ok: true };
 }
@@ -427,6 +503,26 @@ function countGVSessions(lopSchedulesData, gvId) {
   return sessions.size;
 }
 
+/**
+ * Đếm số tiết hiện có của GV theo buổi (sáng/chiều) trong tất cả TKB.
+ * Dùng để ưu tiên điều chuyển vào buổi GV đang ÍT dạy → san đều sáng/chiều.
+ * @returns {sang: number, chieu: number}
+ */
+function countGVBuoiLoad(allTkbs, gvId) {
+  const load = { sang: 0, chieu: 0 };
+  for (const tkb of allTkbs) {
+    for (const ngay of tkb.ngayTrongTuan || []) {
+      for (const tiet of ngay.tiets || []) {
+        if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+          if (ngay.buoi === 'sang') load.sang++;
+          else if (ngay.buoi === 'chieu') load.chieu++;
+        }
+      }
+    }
+  }
+  return load;
+}
+
 // ============== LOCAL SEARCH / HILL CLIMBING OPTIMIZATION ==============
 
 /**
@@ -497,6 +593,42 @@ function validateHardConstraints(lopSchedulesData, giaoViens, hardThuNghi = fals
         // Check chào cờ
         if (ngay.buoi === 'sang' && tiet.tiet === 1 && ngay.thu === 2) {
           viPham.push({ loai: 'chao_co', lopId, slotKey });
+        }
+        // Check T6 đặc biệt: tiết 4 sáng = SHL, cả chiều = nghỉ
+        if (ngay.thu === 6) {
+          if (ngay.buoi === 'sang' && tiet.tiet === 4) {
+            viPham.push({ loai: 'shl_t6', lopId, slotKey });
+          }
+          if (ngay.buoi === 'chieu') {
+            viPham.push({ loai: 't6_chieu_nghi', lopId, slotKey });
+          }
+        }
+        // Check kế tiết cùng phân hiệu (HARD): trong cùng thứ, các tiết liền kề (kể cả bắc cầu buổi)
+        // của cùng GV phải ở cùng phân hiệu.
+        if (tiet.giaoVien) {
+          const gvIdCur = tiet.giaoVien.toString();
+          for (const data2 of lopSchedulesData) {
+            for (const ngay2 of data2.lopSchedule) {
+              if (ngay2.thu !== ngay.thu) continue;
+              for (const tiet2 of ngay2.tiets) {
+                if (!tiet2.giaoVien || tiet2.giaoVien.toString() !== gvIdCur) continue;
+                if (tiet2 === tiet) continue;
+                if (!isKeTiet(ngay.thu, ngay.buoi, tiet.tiet, ngay2.thu, ngay2.buoi, tiet2.tiet)) continue;
+                if (data2.lop.phanHieu !== data.lop.phanHieu) {
+                  viPham.push({
+                    loai: 'ke_tiet_khac_phan_hieu',
+                    gvId: gvIdCur,
+                    slotKey1: createSlotKey(ngay.thu, ngay.buoi, tiet.tiet),
+                    slotKey2: createSlotKey(ngay2.thu, ngay2.buoi, tiet2.tiet),
+                    phanHieu1: data.lop.phanHieu,
+                    phanHieu2: data2.lop.phanHieu,
+                    lop1: data.lop.tenLop,
+                    lop2: data2.lop.tenLop
+                  });
+                }
+              }
+            }
+          }
         }
         // Check GV trùng slot
         if (tiet.giaoVien) {
@@ -636,10 +768,18 @@ function tryMoveBlockOnData(data, block, targetThu, targetBuoi, gv, allSessionsK
   if (Array.isArray(nv.thuNghi) && nv.thuNghi.includes(targetThu)) {
     return { ok: false, viPham: [{ loai: 'thu_nghi' }] };
   }
+  // Check T6 đặc biệt: cả buổi chiều nghỉ
+  if (targetThu === 6 && targetBuoi === 'chieu') {
+    return { ok: false, viPham: [{ loai: 't6_chieu_nghi' }] };
+  }
   // Check chào cờ
   for (const item of block) {
     if (targetBuoi === 'sang' && item.tiet === 1 && targetThu === 2) {
       return { ok: false, viPham: [{ loai: 'chao_co' }] };
+    }
+    // Check SHL T6 (tiết 4 sáng)
+    if (targetBuoi === 'sang' && targetThu === 6 && item.tiet === 4) {
+      return { ok: false, viPham: [{ loai: 'shl_t6' }] };
     }
     // Check GV đã bận ở slot đích (khác slot nguồn)
     const targetKey = createSlotKey(targetThu, targetBuoi, item.tiet);
@@ -658,6 +798,18 @@ function tryMoveBlockOnData(data, block, targetThu, targetBuoi, gv, allSessionsK
     }
     // Nếu đã có tiết cùng vị trí của chính GV (cùng lop, cùng tiet, target) -> không tính là trùng
     // nhưng vẫn check trùng với GV khác cùng lớp
+  }
+  // Check kế tiết khác phân hiệu (sau khi move giả định)
+  const cloned = cloneSchedulesData(data);
+  for (const item of block) {
+    const cloneLopData = cloned.find(d => d.lop._id.toString() === item.lopId);
+    if (!cloneLopData) continue;
+    const oldNgay = cloneLopData.lopSchedule.find(n => n.thu === item.thu && n.buoi === item.buoi);
+    if (oldNgay) oldNgay.tiets = oldNgay.tiets.filter(t => t.tiet !== item.tiet);
+  }
+  for (const item of block) {
+    const check = checkKeTietPhanHieu(cloned, gvId, item.lopId, targetThu, targetBuoi, item.tiet);
+    if (!check.ok) return { ok: false, viPham: [{ loai: 'ke_tiet_khac_phan_hieu' }] };
   }
   return { ok: true, viPham: [] };
 }
@@ -710,6 +862,11 @@ function tryMoveSingleTietOnData(data, item, targetThu, targetBuoi, targetTiet, 
   if (targetBuoi === 'sang' && targetTiet === 1 && targetThu === 2) {
     return { ok: false };
   }
+  // T6 đặc biệt: tiết 4 sáng = SHL, cả chiều = nghỉ
+  if (targetThu === 6) {
+    if (targetBuoi === 'sang' && targetTiet === 4) return { ok: false };
+    if (targetBuoi === 'chieu') return { ok: false };
+  }
   // Tiết phải hợp lệ với buổi đích
   if (!isValidTietForBuoi(targetTiet, targetBuoi)) {
     return { ok: false };
@@ -724,6 +881,14 @@ function tryMoveSingleTietOnData(data, item, targetThu, targetBuoi, targetTiet, 
   if (ngay && ngay.tiets.some(t => t.tiet === targetTiet && (!t.giaoVien || t.giaoVien.toString() !== gvId))) {
     return { ok: false };
   }
+  // Ràng buộc kế tiết cùng phân hiệu: thử trên bản clone (move giả định)
+  const cloned = cloneSchedulesData(data);
+  const cloneItem = { ...item, thu: item.thu, buoi: item.buoi, tiet: item.tiet, lopId: item.lopId };
+  const clonedLopData = cloned.find(d => d.lop._id.toString() === item.lopId);
+  const clonedOldNgay = clonedLopData.lopSchedule.find(n => n.thu === cloneItem.thu && n.buoi === cloneItem.buoi);
+  if (clonedOldNgay) clonedOldNgay.tiets = clonedOldNgay.tiets.filter(t => t.tiet !== cloneItem.tiet);
+  const keTietCheck = checkKeTietPhanHieu(cloned, gvId, item.lopId, targetThu, targetBuoi, targetTiet);
+  if (!keTietCheck.ok) return { ok: false };
   return { ok: true };
 }
 
@@ -806,6 +971,11 @@ function generateMoveCandidatesForGV(data, gv, busyForGV, allSlots) {
       for (const slot of allSlots) {
         if (slot.buoi !== item.buoi) continue; // giữ cùng buổi
         if (slot.thu === item.thu && slot.tiet === item.tiet) continue;
+        // Skip thứ 6 đặc biệt: SHL tiết 4 sáng, cả chiều nghỉ
+        if (slot.thu === 6) {
+          if (slot.buoi === 'sang' && slot.tiet === 4) continue;
+          if (slot.buoi === 'chieu') continue;
+        }
         const validation = tryMoveSingleTietOnData(data, item, slot.thu, slot.buoi, slot.tiet, gv, busyForGV);
         if (!validation.ok) continue;
         candidates.push({
@@ -876,7 +1046,7 @@ function buildCapacityMap(gv, lopSchedulesData, gvBusySet, lopIdsSet) {
  * Trả về Set<"thu-buoi"> đã chọn.
  */
 function solveMinSessionSet(requiredPeriods, capacityMap, gv, lopSchedulesData, gvBusySet) {
-  // Filter session có capacity > 0 và không vi phạm thứ nghỉ
+  // Filter session có capacity > 0 và không vi phạm thứ nghỉ / T6 đặc biệt
   const nv = gv.nguyenVong || {};
   const available = [];
   for (const [key, cap] of capacityMap) {
@@ -884,6 +1054,8 @@ function solveMinSessionSet(requiredPeriods, capacityMap, gv, lopSchedulesData, 
     const [thuStr, buoi] = key.split('-');
     const thu = parseInt(thuStr);
     if (Array.isArray(nv.thuNghi) && nv.thuNghi.includes(thu)) continue;
+    // T6: cả buổi chiều nghỉ
+    if (thu === 6 && buoi === 'chieu') continue;
     available.push({ key, capacity: cap });
   }
 
@@ -913,11 +1085,21 @@ function solveMinSessionSet(requiredPeriods, capacityMap, gv, lopSchedulesData, 
 function findAvailableSlotsInSession(thu, buoi, gv, lopId, lopSchedulesData, gvBusySet) {
   const config = TKB_CONFIG.sessions[buoi];
   if (!config) return [];
+  // Skip cả buổi T6: tiết 4 sáng = SHL, cả chiều = nghỉ
+  if (thu === 6 && buoi === 'chieu') return [];
+  const gvId = gv._id ? gv._id.toString() : null;
   const slots = [];
 
   for (let tiet = config.tietBatDau; tiet <= config.tietKetThuc; tiet++) {
     // Skip chào cờ
     if (buoi === 'sang' && thu === 2 && tiet === 1) continue;
+    // Skip SHL T6 (tiết 4 sáng)
+    if (buoi === 'sang' && thu === 6 && tiet === 4) continue;
+    // Kế tiết khác phân hiệu
+    if (gvId) {
+      const check = checkKeTietPhanHieu(lopSchedulesData, gvId, lopId, thu, buoi, tiet);
+      if (!check.ok) continue;
+    }
 
     const key = createSlotKey(thu, buoi, tiet);
 
@@ -1804,6 +1986,20 @@ async function autoGenerateTKB(namHoc, options = {}) {
           let bestScore = -Infinity;
           for (const slot of allSlots) {
             if (lopUsedSlots.has(slot.key)) continue;
+            // Skip chào cờ
+            if (slot.buoi === 'sang' && slot.tiet === 1 && slot.thu === 2) continue;
+            // Skip thứ 6 đặc biệt: tiết 4 sáng = SHL, cả buổi chiều = nghỉ
+            if (slot.thu === 6) {
+              if (slot.buoi === 'sang' && slot.tiet === 4) continue;
+              if (slot.buoi === 'chieu') continue; // cả buổi chiều T6 nghỉ
+            }
+            // === RÀNG BUỘC "KẾ TIẾT CÙNG PHÂN HIỆU" (HARD CONSTRAINT) ===
+            // Nếu GV đã có tiết liền kề (kể cả bắc cầu buổi 4↔5) ở cùng thứ,
+            // tiết kế tiếp phải cùng phân hiệu với tiết hiện có.
+            const keTietCheck = checkKeTietPhanHieu(lopSchedulesData, gvId, lop._id.toString(), slot.thu, slot.buoi, slot.tiet);
+            if (!keTietCheck.ok) {
+              continue; // skip slot - gây vi phạm kế tiết khác phân hiệu
+            }
             // === RÀNG BUỘC "1 BUỔI CHỈ 1 MÔN" (HARD CONSTRAINT) ===
             // Mỗi buổi (sáng/chiều của 1 thứ) chỉ được học tối đa 1 tiết của 1 môn.
             // Tránh tình trạng học 1 môn liên tục nhiều tiết trong cùng buổi.
@@ -2570,6 +2766,11 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
         // Helper: kiểm tra slot có hợp lệ với ràng buộc Tin học/Công nghệ cạnh nhau không
         const isValidSlotForMon = (thu, buoi, tiet) => {
           if (buoi === 'sang' && tiet === 1 && thu === 2) return false; // chào cờ
+          // Thứ 6 đặc biệt: tiết 4 sáng = SHL, cả buổi chiều = nghỉ
+          if (thu === 6) {
+            if (buoi === 'sang' && tiet === 4) return false;
+            if (buoi === 'chieu') return false;
+          }
           const buoiKey = `${thu}-${buoi}`;
           if (tkbMonBuoi.has(buoiKey)) return false;
           if (uc.mon === 'Tin học' || uc.mon === 'Công nghệ') {
@@ -2603,11 +2804,53 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
               }
             }
           }
+          // GV hiện có tiết nào ở PH target (key: "thu|buoi" → Set<tiet>)
+          // → chặn tiết điều chuyển liền kề với tiết GV đã có tại PH đó
+          const gvAtTargetPhTietUC = new Map();
+          for (const tkbCheck of allTkbs) {
+            const lopCheck = lopById.get(tkbCheck.lop.toString());
+            if ((lopCheck?.phanHieu || '').trim() !== targetPhanHieu) continue;
+            for (const ngay of tkbCheck.ngayTrongTuan || []) {
+              for (const tiet of ngay.tiets || []) {
+                if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                  const k = `${ngay.thu}|${ngay.buoi}`;
+                  if (!gvAtTargetPhTietUC.has(k)) gvAtTargetPhTietUC.set(k, new Set());
+                  gvAtTargetPhTietUC.get(k).add(tiet.tiet);
+                }
+              }
+            }
+          }
           // === Bước A: thử ADD (slot trống + GV rảnh) ===
+          // Ưu tiên buổi GV đang ít dạy → san đều sáng/chiều
+          const gvBuoiLoadUC = countGVBuoiLoad(allTkbs, gvId);
+          const gvSangNhieuHonUC = gvBuoiLoadUC.sang > gvBuoiLoadUC.chieu;
+          // Build lopSchedulesData view để check kế tiết cùng phân hiệu
+          const lopSchedulesView = allTkbs.map(t => ({
+            lop: { _id: t.lop, phanHieu: lopPhanHieuById.get(t.lop.toString()) || '', tenLop: lopById.get(t.lop.toString())?.tenLop || '' },
+            lopSchedule: (t.ngayTrongTuan || []).map(n => ({ thu: n.thu, buoi: n.buoi, tiets: n.tiets || [] }))
+          }));
+          const addCandidates = [];
           for (const slot of allSlots) {
             if (usedSlotKeys.has(slot.key)) continue;
             if (gvBusySlots.has(slot.key)) continue;
             if (!isValidSlotForMon(slot.thu, slot.buoi, slot.tiet)) continue;
+            // Chặn liền kề với tiết GV đang dạy ở cùng PH target
+            const adjKeyUC = `${slot.thu}|${slot.buoi}`;
+            const adjTietSetUC = gvAtTargetPhTietUC.get(adjKeyUC);
+            if (adjTietSetUC && (adjTietSetUC.has(slot.tiet - 1) || adjTietSetUC.has(slot.tiet + 1))) {
+              continue;
+            }
+            // Kế tiết khác phân hiệu (xét trên view tạm)
+            const keTietUC = checkKeTietPhanHieu(lopSchedulesView, gvId, tkb.lop.toString(), slot.thu, slot.buoi, slot.tiet);
+            if (!keTietUC.ok) continue;
+            const buoiScore = (slot.buoi === 'sang')
+              ? (gvSangNhieuHonUC ? 0 : 1)
+              : (gvSangNhieuHonUC ? 1 : 0);
+            addCandidates.push({ slot, buoiScore });
+          }
+          if (addCandidates.length > 0) {
+            addCandidates.sort((a, b) => b.buoiScore - a.buoiScore);
+            const slot = addCandidates[0].slot;
             // OK - xếp vào đây
             let ngay = tkb.ngayTrongTuan.find(n => n.thu === slot.thu && n.buoi === slot.buoi);
             if (!ngay) {
@@ -2637,7 +2880,6 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
             // Cập nhật current tiết cho GV để lần lặp sau sort đúng
             gvCurrentTiet.set(gvId, (gvCurrentTiet.get(gvId) || 0) + 1);
             placed = true;
-            break;
           }
 
           // === Bước B: thử MOVE (lấy 1 tiết của GV ở phân hiệu khác) ===
@@ -2833,6 +3075,9 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
       const gvId = gvInfo.gv._id.toString();
       const phanHieuDieuChuyen = (gvInfo.gv.phanHieuDieuChuyen || '').trim();
       let tietConDu = gvInfo.soTietDangDu;
+      let soTietDieuChuyenCuaGV = 0; // đếm tiết điều chuyển của riêng GV này
+      // Load buổi hiện tại của GV → ưu tiên xếp vào buổi đang ít dạy
+      const gvBuoiLoad = countGVBuoiLoad(allTkbs, gvId);
 
       while (tietConDu > 0) {
         // Tìm phân hiệu thiếu phù hợp
@@ -2911,19 +3156,51 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
             }
           }
 
-          // Sắp xếp slot theo thứ tự: tiết phù hợp với buổi (sáng 1-4, chiều 5-7)
+          // GV hiện có tiết nào ở PH target (key: "thu|buoi" → Set<tiet>)
+          // → dùng để chặn tiết điều chuyển liền kề với tiết đã có của GV tại PH đó.
+          const gvAtTargetPhTiet = new Map();
+          for (const tkbCheck of allTkbs) {
+            const lopCheck = lopById.get(tkbCheck.lop.toString());
+            if ((lopCheck?.phanHieu || '').trim() !== targetPhInfo.phanHieu) continue;
+            for (const ngay of tkbCheck.ngayTrongTuan || []) {
+              for (const tiet of ngay.tiets || []) {
+                if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                  const k = `${ngay.thu}|${ngay.buoi}`;
+                  if (!gvAtTargetPhTiet.has(k)) gvAtTargetPhTiet.set(k, new Set());
+                  gvAtTargetPhTiet.get(k).add(tiet.tiet);
+                }
+              }
+            }
+          }
+
+          // Sắp xếp slot theo thứ tự: tiết phù hợp với buổi (sáng 1-4, chiều 5-7).
+          // ƯU TIÊN: buổi GV đang ít dạy → san đều sáng/chiều.
           let chosenSlot = null;
+          const gvSangNhieuHon = gvBuoiLoad.sang > gvBuoiLoad.chieu;
+          const validSlots = [];
           for (const slot of allSlots) {
             if (usedSlotKeys.has(slot.key)) continue;
             if (gvBusySlots.has(slot.key)) continue;
             // Skip chào cờ
             if (slot.buoi === 'sang' && slot.tiet === 1 && slot.thu === 2) continue;
+            // Skip thứ 6 đặc biệt: tiết 4 sáng = SHL, chiều (5-7) = nghỉ
+            if (slot.thu === 6) {
+              if (slot.buoi === 'sang' && slot.tiet === 4) continue;
+              if (slot.buoi === 'chieu') continue; // cả buổi chiều T6 nghỉ
+            }
             // Kiểm tra "1 buổi 1 môn": nếu buổi đó đã có môn này → skip
             const coMonTrongBuoi = (tkb.ngayTrongTuan || []).some(ngay =>
               ngay.thu === slot.thu && ngay.buoi === slot.buoi &&
               ngay.tiets.some(t => t.chuyenMon === monCanXep.tenChuyenMon)
             );
             if (coMonTrongBuoi) continue;
+            // Chặn tiết điều chuyển LIỀN KỀ với tiết GV đang dạy ở cùng PH target
+            // (cùng thứ + cùng buổi + |Δ tiết| = 1)
+            const adjKey = `${slot.thu}|${slot.buoi}`;
+            const adjTietSet = gvAtTargetPhTiet.get(adjKey);
+            if (adjTietSet && (adjTietSet.has(slot.tiet - 1) || adjTietSet.has(slot.tiet + 1))) {
+              continue;
+            }
             // Kiểm tra chặn cứng Tin học/CN cạnh nhau
             const MON_DAT_BIET = new Set(['Tin học', 'Công nghệ']);
             if (MON_DAT_BIET.has(monCanXep.tenChuyenMon)) {
@@ -2934,8 +3211,23 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
               );
               if (canhNhau) continue;
             }
-            chosenSlot = slot;
-            break;
+            // Kế tiết khác phân hiệu (cross-buổi 4↔5 cũng tính)
+            const lopSchedulesViewUC = allTkbs.map(t => ({
+              lop: { _id: t.lop, phanHieu: (lopById.get(t.lop.toString())?.phanHieu || ''), tenLop: (lopById.get(t.lop.toString())?.tenLop || '') },
+              lopSchedule: (t.ngayTrongTuan || []).map(n => ({ thu: n.thu, buoi: n.buoi, tiets: n.tiets || [] }))
+            }));
+            const keTiet = checkKeTietPhanHieu(lopSchedulesViewUC, gvId, lop._id.toString(), slot.thu, slot.buoi, slot.tiet);
+            if (!keTiet.ok) continue;
+            // Score buổi: buổi đang ít dạy = +1, buổi nhiều = 0
+            const buoiScore = (slot.buoi === 'sang')
+              ? (gvSangNhieuHon ? 0 : 1)
+              : (gvSangNhieuHon ? 1 : 0);
+            validSlots.push({ slot, buoiScore });
+          }
+          // Sort theo buổi ưu tiên (cao → thấp), tie-break theo thứ/tiết gốc của allSlots
+          if (validSlots.length > 0) {
+            validSlots.sort((a, b) => b.buoiScore - a.buoiScore);
+            chosenSlot = validSlots[0].slot;
           }
           if (!chosenSlot) continue;
 
@@ -2967,14 +3259,24 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
 
           tongSoTietDieuChuyen++;
           tietConDu--;
+          soTietDieuChuyenCuaGV++;
           targetPhInfo.soTietThieu = Math.max(0, targetPhInfo.soTietThieu - 1);
           xepDuocVongNay = true;
+          // Cập nhật lại load buổi của GV sau khi commit
+          if (chosenSlot.buoi === 'sang') gvBuoiLoad.sang++;
+          else if (chosenSlot.buoi === 'chieu') gvBuoiLoad.chieu++;
           break;
         }
         if (!xepDuocVongNay) {
           // Không xếp được tiết nào vào phân hiệu này → thoát loop tránh kẹt
           targetPhInfo.soTietThieu = 0;
         }
+      }
+
+      // Cap: GV này đã điều chuyển đủ MAX → không nhận thêm
+      if (soTietDieuChuyenCuaGV >= MAX_TIET_DIEU_CHUYEN_MOI_GV) {
+        console.log(`[assignOverflow]   ⛔ GV "${gvInfo.gv.hoTen}" đã đạt cap điều chuyển ${MAX_TIET_DIEU_CHUYEN_MOI_GV} tiết → dừng`);
+        break;
       }
     }
 
@@ -3442,6 +3744,13 @@ async function fillMissingPeriods(namHoc, lockedGVs = [], lockedSlots = new Map(
     }
   }
 
+  // View lopSchedulesData để check kế tiết cùng phân hiệu
+  const fillLopPhanHieuById = new Map(allLops.map(l => [l._id.toString(), (l.phanHieu || '').trim()]));
+  const fillLopSchedulesView = allTkbs.map(t => ({
+    lop: { _id: t.lop._id, phanHieu: fillLopPhanHieuById.get(t.lop._id.toString()) || '', tenLop: t.lop.tenLop },
+    lopSchedule: (t.ngayTrongTuan || []).map(n => ({ thu: n.thu, buoi: n.buoi, tiets: n.tiets || [] }))
+  }));
+
   // GV by chuyên môn
   const gvByChuyenMon = new Map();
   for (const gv of allGVs) {
@@ -3523,10 +3832,19 @@ async function fillMissingPeriods(namHoc, lockedGVs = [], lockedSlots = new Map(
 
       let placed = false;
       for (const gv of gvList) {
+        const gvId = gv._id.toString();
         // Tìm slot trống
         for (const slot of allSlots) {
           if (usedSlots.has(slot.key)) continue;
-          if (gvBusy.get(gv._id.toString())?.has(slot.key)) continue;
+          if (gvBusy.get(gvId)?.has(slot.key)) continue;
+          // Skip thứ 6 đặc biệt: tiết 4 sáng = SHL, cả buổi chiều = nghỉ
+          if (slot.thu === 6) {
+            if (slot.buoi === 'sang' && slot.tiet === 4) continue;
+            if (slot.buoi === 'chieu') continue;
+          }
+          // Kế tiết khác phân hiệu
+          const fillKeTiet = checkKeTietPhanHieu(fillLopSchedulesView, gvId, lopId, slot.thu, slot.buoi, slot.tiet);
+          if (!fillKeTiet.ok) continue;
 
           // Tìm hoặc tạo ngày
           let ngay = tkb.ngayTrongTuan.find(
@@ -3689,10 +4007,16 @@ async function rearrangeAtomic(namHoc, options = {}) {
     const candidateSlots = [];
     for (const otherThu of TKB_CONFIG.weekdays) {
       if (otherThu === parseInt(thu)) continue; // bỏ qua slot conflict
+      // Skip thứ 6 đặc biệt: SHL sáng tiết 4, cả chiều nghỉ
+      if (otherThu === 6) {
+        if (buoi === 'sang' && parseInt(tiet) === 4) continue;
+        if (buoi === 'chieu') continue;
+      }
       candidateSlots.push({ thu: otherThu, buoi, tiet: parseInt(tiet) });
     }
 
     for (const { tkb: moveTkb, tenLop } of moveTkbs) {
+      const moveLopPhanHieu = (moveTkb.lop?.phanHieu || '').trim();
       let moved = false;
       // Tìm tiết đang có GV conflict trong TKB
       for (const ngay of moveTkb.ngayTrongTuan) {
@@ -3708,6 +4032,13 @@ async function rearrangeAtomic(namHoc, options = {}) {
           // Check slot đó có trống trong TKB moveTkb không
           const slotNgay = moveTkb.ngayTrongTuan.find(n => n.thu === slot.thu && n.buoi === slot.buoi);
           if (slotNgay?.tiets.some(t => t.tiet === slot.tiet)) continue;
+          // Kế tiết khác phân hiệu: xét trên view tạm (move giả định)
+          const rearrangeView = allTkbs.map(t => ({
+            lop: { _id: t.lop._id, phanHieu: (t.lop?.phanHieu || '').trim(), tenLop: t.lop.tenLop },
+            lopSchedule: (t.ngayTrongTuan || []).map(n => ({ thu: n.thu, buoi: n.buoi, tiets: (n.tiets || []).filter(x => x !== conflictTiet) }))
+          }));
+          const keTietRearrange = checkKeTietPhanHieu(rearrangeView, gvId, moveTkb.lop._id.toString(), slot.thu, slot.buoi, slot.tiet);
+          if (!keTietRearrange.ok) continue;
           // Đổi slot
           ngay.tiets.splice(idx, 1);
           // Cập nhật busy

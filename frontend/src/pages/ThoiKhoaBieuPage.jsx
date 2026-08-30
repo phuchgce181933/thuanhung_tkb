@@ -46,17 +46,29 @@ function ThoiKhoaBieuPage() {
   const [selectedPhanHieuForGenerate, setSelectedPhanHieuForGenerate] = useState(''); // phân hiệu được chọn trong modal
   const [hasPhanHieuScheduled, setHasPhanHieuScheduled] = useState(false); // đánh dấu đã sắp theo phân hiệu ít nhất 1 lần
   const [scheduledPhanHieus, setScheduledPhanHieus] = useState([]); // các phân hiệu đã được sắp xếp thành công
-  const [showPostScheduleChoiceModal, setShowPostScheduleChoiceModal] = useState(false); // modal chọn 2 option SAU khi sắp gặp lỗi
-  const [postScheduleContext, setPostScheduleContext] = useState(null); // { targetPhanHieu, missingCount }
   const [showDieuChuyenModal, setShowDieuChuyenModal] = useState(false); // modal gợi ý điều chuyển
   const [dieuChuyenData, setDieuChuyenData] = useState(null); // { missingSubjects, candidates, scheduledPhanHieus }
   const [dieuChuyenLoading, setDieuChuyenLoading] = useState(false);
-  const [warningModal, setWarningModal] = useState(null); // { title, message, warnings }
   const [lastWarnings, setLastWarnings] = useState([]); // cảnh báo mới nhất từ DB để xem lại sau khi OK
   const [groupedError, setGroupedError] = useState(null); // { groups: { phanHieu: [warnings] }, raw, targetPhanHieu, jobLabel }
-  const [showAllWarnings, setShowAllWarnings] = useState(false);
   // Lần điều chuyển GV gần nhất (luôn hiển thị banner để user biết đã phân công cho ai)
-  const [lastResolution, setLastResolution] = useState(null); // { resolvedFromUnresolved, soAddCases, soMoveCases, soStillUnresolved, hidden }
+  // KHỞI TẠO từ localStorage để F5 không mất banner
+  const [lastResolution, setLastResolution] = useState(() => {
+    try {
+      const raw = localStorage.getItem('lastResolution');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }); // { resolvedFromUnresolved, soAddCases, soMoveCases, soStillUnresolved, hidden }
+  // Sync xuống localStorage mỗi khi thay đổi → F5 vẫn còn
+  useEffect(() => {
+    try {
+      if (lastResolution) {
+        localStorage.setItem('lastResolution', JSON.stringify(lastResolution));
+      } else {
+        localStorage.removeItem('lastResolution');
+      }
+    } catch {}
+  }, [lastResolution]);
   // Lịch sử điều chuyển (assignOverflow)
   const [showDieuChuyenHistoryModal, setShowDieuChuyenHistoryModal] = useState(false);
   const [dieuChuyenHistoryList, setDieuChuyenHistoryList] = useState([]); // summary list
@@ -1132,50 +1144,31 @@ function ThoiKhoaBieuPage() {
         }
 
         if (result.warnings && result.warnings.length > 0) {
-          setWarningModal({
-            title: 'Cảnh báo',
-            message: result.message,
-            warnings: result.warnings,
-            extraCount: result.warnings.length
-          });
+          // Thay vì popup, hiển thị toast + lưu warnings để xem ở banner/log nếu cần
+          setError(`⚠️ ${result.message} (${result.warnings.length} cảnh báo)`);
+          setTimeout(() => setError(null), 6000);
           setLastWarnings(result.warnings || []);
-          setShowAllWarnings(false);
         } else if (hasUnmetNguyenVong) {
           const phanHieuTag = currentPhanHieu ? ` [phân hiệu "${currentPhanHieu}"]` : '';
-          setWarningModal({
-            title: `Cảnh báo nguyện vọng GV${phanHieuTag}`,
-            message: `${result.message}. Giáo viên chưa đạt nguyện vọng buổi tối đa: ${unmetRows.map(row => `${row.gv}${row.phanHieu ? ` (${row.phanHieu})` : ''}: ${row.actual}/${row.desired}`).join('; ')}`,
-            warnings: unmetRows.map(row => `${row.gv}${row.phanHieu ? ` (${row.phanHieu})` : ''}: hiện ${row.actual} buổi, mục tiêu ${row.desired} buổi`),
-            extraCount: unmetRows.length
-          });
+          setError(`⚠️ Nguyện vọng GV${phanHieuTag}: ${unmetRows.length} GV chưa đạt nguyện vọng buổi. Xem chi tiết trong log.`);
+          setTimeout(() => setError(null), 6000);
           setLastWarnings(unmetRows.map(row => `${row.gv}${row.phanHieu ? ` (${row.phanHieu})` : ''}: hiện ${row.actual} buổi, mục tiêu ${row.desired} buổi`));
-          setShowAllWarnings(false);
         } else if (result.partialSuccess && Array.isArray(result.missingClasses) && result.missingClasses.length > 0) {
-          // SẮP THIẾU - thông báo đã sắp được + còn case chưa xếp → sẽ điều chuyển sau
+          // SẮP THIẾU - banner ⚠️ sẽ tự hiển thị unresolved, không cần popup
           const mcCount = result.missingClasses.length;
           const phTag = currentPhanHieu ? ` phân hiệu "${currentPhanHieu}"` : '';
-          setWarningModal({
-            title: `✅ Sắp${phTag} hoàn tất — còn ${mcCount} lớp-môn cần điều chuyển`,
-            message: `${result.message}\n\n📌 Hệ thống đã tự ghi nhận ${mcCount} lớp-môn chưa xếp được vào danh sách "chờ điều chuyển". Bạn có thể:\n  • Bấm "🔄 Sắp điều chuyển" để hệ thống tự tìm GV phù hợp từ phân hiệu khác.\n  • Hoặc thêm GV dạy môn này vào phân hiệu rồi bấm "Sắp theo phân hiệu" lại.`,
-            warnings: result.missingClasses.slice(0, 30).map(mc => `${mc.lop} - ${mc.mon} thiếu ${mc.soTietConThieu} tiết`),
-            extraCount: Math.max(0, mcCount - 30),
-            missingClasses: result.missingClasses,
-          });
+          setError(`✅ Sắp${phTag} hoàn tất — còn ${mcCount} lớp-môn cần điều chuyển. Xem banner ⚠️ trên đầu.`);
+          setTimeout(() => setError(null), 6000);
           setLastWarnings(result.missingClasses.slice(0, 30).map(mc => `${mc.lop} - ${mc.mon} thiếu ${mc.soTietConThieu} tiết`));
-          setShowAllWarnings(false);
         } else {
-          setWarningModal({
-            title: 'Thông báo',
-            message: result.message,
-            warnings: []
-          });
+          // Thành công hoàn toàn
+          setSuccess(result.message || 'Sắp TKB thành công');
+          setTimeout(() => setSuccess(null), 4000);
+          setLastWarnings([]);
         }
       } else if (result && !result.success) {
-        setWarningModal({
-          title: 'Lỗi',
-          message: result.message,
-          warnings: []
-        });
+        setError(`❌ Lỗi: ${result.message}`);
+        setTimeout(() => setError(null), 6000);
         setLastWarnings([]);
       }
 
@@ -1186,15 +1179,8 @@ function ThoiKhoaBieuPage() {
           const msg = vuotDinhMuc.map(g =>
             `${g.gv} (${g.phanHieu || 'N/A'}): dạy ${g.soTietDaDay} tiết, vượt định mức ${g.soTietDaDay - g.soTietDinhMuc} tiết`
           ).join('; ');
-          setWarningModal(prev => ({
-            ...(prev || { title: 'Nhắc nhở', message: '', warnings: [] }),
-            title: 'Nhắc nhở GV vượt định mức',
-            message: msg,
-            warnings: [
-              ...((prev && prev.warnings) || []),
-              ...vuotDinhMuc.map(g => `${g.gv}: ${g.soTietDaDay}/${g.soTietDinhMuc} tiết (vượt ${g.soTietDaDay - g.soTietDinhMuc})`)
-            ],
-          }));
+          setError(`⚠️ Có ${vuotDinhMuc.length} GV vượt định mức: ${msg}`);
+          setTimeout(() => setError(null), 6000);
         }
       }
 
@@ -1233,12 +1219,10 @@ function ThoiKhoaBieuPage() {
           console.warn('Không lưu được unresolved cases vào DB:', saveErr.message);
         }
       } else {
-        // Fallback: dùng warningModal cũ
-        setWarningModal({
-          title: '⚠️ Hệ thống không thể tự sắp',
-          message: msg,
-          warnings: [],
-        });
+        // Fallback: log ra console + toast ngắn
+        console.warn('[runTkbJob] Lỗi:', msg);
+        setError(`❌ ${msg}`);
+        setTimeout(() => setError(null), 6000);
       }
       return false;
     } finally {
@@ -1300,9 +1284,12 @@ function ThoiKhoaBieuPage() {
     const totalMissing = missing.length;
 
     if (totalMissing > 0) {
-      // Mở modal chọn: điều chuyển ngay hoặc để sau
-      setPostScheduleContext({ targetPhanHieu, missingCount: totalMissing });
-      setShowPostScheduleChoiceModal(true);
+      // Banner ⚠️ trên đầu đã tự hiển thị unresolved cases - không cần popup nữa
+      setError(`Phân hiệu "${targetPhanHieu}" còn ${totalMissing} lớp-môn chưa xếp được. Vào banner ⚠️ để xem chi tiết hoặc bấm "Điều chuyển tự động".`);
+      setTimeout(() => setError(null), 6000);
+    } else {
+      setSuccess(`Đã sắp xong TKB phân hiệu "${targetPhanHieu}"`);
+      setTimeout(() => setSuccess(null), 4000);
     }
   };
 
@@ -1326,9 +1313,42 @@ function ThoiKhoaBieuPage() {
     if (ok) {
       setHasPhanHieuScheduled(true);
       setScheduledPhanHieus(phanHieuOptions);
-      setSuccess(`Đã sắp xong TKB cho ${phanHieuOptions.length} phân hiệu`);
-      setTimeout(() => setSuccess(null), 4000);
       if (typeof loadData === 'function') await loadData();
+
+      // Reload unresolved cases từ DB (giống flow assignOverflow) để hiện banner + modal
+      try {
+        const res = await tkbAPI.getUnresolvedCases(namHoc);
+        const data = res?.data?.data;
+        const totalCount = data?.summary?.totalMissingClasses || data?.missingClasses?.length || 0;
+        if (totalCount > 0 && data.missingClasses) {
+          const groups = {};
+          for (const mc of data.missingClasses) {
+            const ph = mc.phanHieu || '(không rõ)';
+            if (!groups[ph]) groups[ph] = [];
+            const reasonMatch = mc.message ? mc.message.match(/\(([^)]+)\)/) : null;
+            groups[ph].push({
+              lop: mc.lop,
+              mon: mc.mon,
+              missing: mc.soTietConThieu,
+              needed: mc.soTietConThieu,
+              reason: reasonMatch ? reasonMatch[1] : 'không rõ',
+            });
+          }
+          setUnresolvedCases({ groups, totalCount });
+
+          // Banner ⚠️ trên đầu đã tự hiển thị unresolved cases - không cần popup nữa
+          setError(`Còn ${totalCount} lớp-môn chưa xếp được. Vào banner ⚠️ để xem chi tiết hoặc bấm "Điều chuyển tự động".`);
+          setTimeout(() => setError(null), 6000);
+        } else {
+          setUnresolvedCases({ groups: {}, totalCount: 0 });
+          setSuccess(`Đã sắp xong TKB cho ${phanHieuOptions.length} phân hiệu`);
+          setTimeout(() => setSuccess(null), 4000);
+        }
+      } catch (e) {
+        console.warn('Reload unresolved cases thất bại:', e?.message);
+        setSuccess(`Đã sắp xong TKB cho ${phanHieuOptions.length} phân hiệu`);
+        setTimeout(() => setSuccess(null), 4000);
+      }
     }
   };
 
@@ -1525,8 +1545,6 @@ function ThoiKhoaBieuPage() {
     // Đóng tất cả modal đang mở để user thấy kết quả
     setGroupedError(null);
     setShowDieuChuyenModal(false);
-    setShowPostScheduleChoiceModal(false);
-    setWarningModal(null);
 
     let success = false;
     let resolvedCount = 0;
@@ -1588,7 +1606,6 @@ function ThoiKhoaBieuPage() {
     await fetchAllTkbsCache(true);
 
     // Đảm bảo các modal không che TKB
-    setWarningModal(null);
     setShowDieuChuyenModal(false);
     setGroupedError(null);
 
@@ -2717,17 +2734,15 @@ function ThoiKhoaBieuPage() {
       {lastWarnings.length > 0 && (
         <button
           onClick={() => {
-            setWarningModal({
-              title: 'Cảnh báo',
-              message: 'Đã sắp xếp TKB cho tất cả lớp. Dưới đây là các cảnh báo từ lần sắp xếp gần nhất:',
-              warnings: lastWarnings,
-              extraCount: lastWarnings.length
-            });
-            setShowAllWarnings(false);
+            const summary = lastWarnings.length > 30
+              ? lastWarnings.slice(0, 30).join('\n• ') + `\n... và ${lastWarnings.length - 30} cảnh báo khác`
+              : lastWarnings.join('\n• ');
+            alert(`Cảnh báo từ lần sắp xếp gần nhất (${lastWarnings.length}):\n\n• ${summary}`);
           }}
-          className="fixed right-5 bottom-16 z-40 px-4 py-2 rounded-lg bg-[#d8a75a] text-[#2a1d0d] font-bold shadow-lg hover:bg-[#e5b86a] transition-colors"
+          className="fixed right-5 bottom-16 z-40 px-4 py-2 rounded-lg bg-amber-500 text-white font-bold shadow-lg hover:bg-amber-600 transition-colors"
+          title="Xem chi tiết các cảnh báo từ lần sắp gần nhất"
         >
-          Xem cảnh báo
+          ⚠️ Xem cảnh báo ({lastWarnings.length})
         </button>
       )}
 
@@ -2821,87 +2836,6 @@ function ThoiKhoaBieuPage() {
                 title={`Sắp TKB cho TẤT CẢ ${phanHieuOptions.length} phân hiệu (chạy tuần tự)`}
               >
                 🚀 Tạo tất cả phân hiệu
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal chọn cách xử lý khi sắp TKB theo phân hiệu gặp lớp thiếu GV */}
-      {showPostScheduleChoiceModal && postScheduleContext && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[60] p-4"
-          onClick={() => setShowPostScheduleChoiceModal(false)}
-        >
-          <div
-            className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-6 py-5 bg-gradient-to-r from-red-500 to-orange-500 text-white">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 bg-white bg-opacity-20 rounded-full flex items-center justify-center text-2xl">⚠️</div>
-                <div>
-                  <h3 className="text-xl font-bold">Có {postScheduleContext.missingCount} lớp-môn bị thiếu GV</h3>
-                  <p className="text-sm text-orange-50 mt-0.5">
-                    Phân hiệu <b>"{postScheduleContext.targetPhanHieu}"</b> không xếp đủ GV cho một số lớp
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-6 py-5">
-              <p className="text-sm text-gray-700 mb-4">
-                Chọn cách xử lý tiếp theo:
-              </p>
-              <div className="space-y-3">
-                <button
-                  onClick={async () => {
-                    setShowPostScheduleChoiceModal(false);
-                    await handleSapDieuChuyen();
-                  }}
-                  className="w-full text-left p-4 border-2 border-blue-300 hover:border-blue-500 hover:bg-blue-50 rounded-lg transition"
-                >
-                  <div className="font-semibold text-gray-800 flex items-center gap-2">
-                    🔄 Điều chuyển tự động GV thiếu tiết
-                  </div>
-                  <div className="text-xs text-gray-600 mt-1">
-                    Tự động tìm GV <b>cùng chuyên môn</b> đang ở phân hiệu khác (thiếu tiết so với định mức)
-                    → điều chuyển sang lớp đang thiếu.
-                  </div>
-                </button>
-                <button
-                  onClick={async () => {
-                    setShowPostScheduleChoiceModal(false);
-                    // Sắp tuần tự các phân hiệu còn lại (chưa có TKB) trước
-                    const remaining = phanHieuOptions.filter(ph => ph !== postScheduleContext.targetPhanHieu && !scheduledPhanHieus.includes(ph));
-                    for (const ph of remaining) {
-                      await runTkbJob(
-                        () => tkbAPI.autoGenerateByPhanHieu(namHoc, ph),
-                        `Sắp TKB phân hiệu "${ph}"`
-                      );
-                      setScheduledPhanHieus(prev => prev.includes(ph) ? prev : [...prev, ph]);
-                    }
-                    await handleSapDieuChuyen();
-                  }}
-                  className="w-full text-left p-4 border-2 border-orange-300 hover:border-orange-500 hover:bg-orange-50 rounded-lg transition"
-                >
-                  <div className="font-semibold text-gray-800 flex items-center gap-2">
-                    ⏩ Sắp các phân hiệu khác trước, rồi tự động điều chuyển
-                  </div>
-                  <div className="text-xs text-gray-600 mt-1">
-                    Tự động chạy sắp TKB cho <b>tất cả phân hiệu chưa có TKB</b> theo thứ tự,
-                    sau đó mới tự động điều chuyển GV (pool ứng viên rộng hơn).
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <div className="px-6 py-4 bg-gray-50 border-t flex items-center justify-end">
-              <button
-                onClick={() => setShowPostScheduleChoiceModal(false)}
-                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded"
-              >
-                Để sau
               </button>
             </div>
           </div>
@@ -3073,70 +3007,6 @@ function ThoiKhoaBieuPage() {
                 className="px-4 py-2 bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white rounded text-sm"
               >
                 ⏩ Sắp các phân hiệu khác
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Popup cảnh báo chung */}
-      {warningModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[60] p-4">
-          <div className="w-full max-w-[900px] max-h-[90vh] rounded-2xl border border-yellow-700/60 bg-[#2d2218] text-[#f4e1b7] shadow-2xl overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-yellow-700/50">
-              <div className="flex items-center gap-3 text-lg font-bold">
-                <span className="text-yellow-300">⚠</span>
-                <span>{warningModal.title}</span>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-5 py-4 text-sm leading-6">
-              <div className="mb-3 text-[#f6efde] whitespace-pre-line">{warningModal.message}</div>
-
-              {warningModal.warnings.length > 0 && (
-                <div className="mt-3 rounded-md border border-yellow-700/40 bg-[#3a2a1d] p-3">
-                  <div className="font-semibold mb-2 text-yellow-200">
-                    {warningModal.title === 'Đã lấp' ? 'Đã lấp:' : 'Cảnh báo:'}
-                  </div>
-                  <ul className="list-disc list-inside space-y-1 text-[#f5e8c9] max-h-[46vh] overflow-y-auto pr-2">
-                    {(showAllWarnings ? warningModal.warnings : warningModal.warnings.slice(0, 8)).map((item, idx) => (
-                      <li key={idx}>{item}</li>
-                    ))}
-                    {!showAllWarnings && warningModal.warnings.length > 8 && (
-                      <li className="list-none pl-0 mt-2 text-yellow-200 cursor-pointer underline" onClick={() => setShowAllWarnings(true)}>
-                        ... và {warningModal.warnings.length - 8} cảnh báo khác
-                      </li>
-                    )}
-                    {showAllWarnings && warningModal.warnings.length > 8 && (
-                      <li className="list-none pl-0 mt-2 text-yellow-200 cursor-pointer underline" onClick={() => setShowAllWarnings(false)}>
-                        Thu gọn cảnh báo
-                      </li>
-                    )}
-                  </ul>
-                </div>
-              )}
-            </div>
-
-            <div className="px-5 py-4 flex justify-end gap-3 border-t border-yellow-700/40 bg-[#2d2218]">
-              {warningModal.missingClasses && warningModal.missingClasses.length > 0 && (
-                <button
-                  onClick={async () => {
-                    setWarningModal(null);
-                    await handleSapDieuChuyen();
-                  }}
-                  className="px-5 py-2.5 rounded-full bg-gradient-to-r from-orange-500 to-red-500 text-white font-bold hover:from-orange-600 hover:to-red-600 transition-colors shadow-md"
-                >
-                  🔄 Sắp điều chuyển ngay
-                </button>
-              )}
-              <button
-                onClick={() => {
-                  setWarningModal(null);
-                  setShowAllWarnings(false);
-                }}
-                className="px-8 py-2.5 rounded-full bg-[#d8a75a] text-[#2a1d0d] font-bold hover:bg-[#e5b86a] transition-colors shadow-md"
-              >
-                OK
               </button>
             </div>
           </div>

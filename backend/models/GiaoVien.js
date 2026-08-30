@@ -86,10 +86,6 @@ const giaoVienSchema = new mongoose.Schema({
       default: 0,
       min: 0
     },
-    lopDieuChuyen: [{
-      type: String,
-      default: ''
-    }],
     tongSoTietDuThieu: {
       type: Number,
       default: 0

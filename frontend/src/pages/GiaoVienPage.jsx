@@ -37,7 +37,6 @@ function GiaoVienPage() {
       soTietDinhMuc: 0,
       soTietDuocPhanCong: 0,
       soTietDieuChuyen: 0,
-      lopDieuChuyen: [],
       tongSoTietDuThieu: 0
     }
   });
@@ -74,13 +73,7 @@ function GiaoVienPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const eligibleClassIds = new Set(lopPhuHop.map(lop => String(lop._id)));
-      const selectedClassIds = (formData.phanCong.lopDieuChuyen || [])
-        .filter(lopId => eligibleClassIds.has(String(lopId)));
-      const submitData = {
-        ...formData,
-        phanCong: { ...formData.phanCong, lopDieuChuyen: selectedClassIds }
-      };
+      const submitData = { ...formData };
       if (editingGV) {
         await giaoVienAPI.update(editingGV._id, submitData);
       } else {
@@ -105,7 +98,6 @@ function GiaoVienPage() {
     soTietDinhMuc: 0,
     soTietDuocPhanCong: 0,
     soTietDieuChuyen: 0,
-    lopDieuChuyen: [],
     tongSoTietDuThieu: 0
   });
 
@@ -145,7 +137,6 @@ function GiaoVienPage() {
             soTietDinhMuc: Number(gv.phanCong.soTietDinhMuc || 0),
             soTietDuocPhanCong: Number(gv.phanCong.soTietDuocPhanCong || 0),
             soTietDieuChuyen: Number(gv.phanCong.soTietDieuChuyen || 0),
-            lopDieuChuyen: gv.phanCong.lopDieuChuyen || [],
             tongSoTietDuThieu: Number(gv.phanCong.tongSoTietDuThieu || calculateDuThieu(gv.phanCong))
           }
         : emptyPhanCong()
@@ -203,7 +194,6 @@ function GiaoVienPage() {
     return true;
   });
   const lopChinh = lopPhuHop.filter(lop => !formData.phanHieu || lop.phanHieu === formData.phanHieu);
-  const lopDieuChuyen = lopPhuHop.filter(lop => formData.phanHieu && lop.phanHieu !== formData.phanHieu);
 
   const addChuyenMon = () => {
     setFormData({
@@ -241,15 +231,6 @@ function GiaoVienPage() {
       ...formData,
       phanCong: nextPhanCong
     });
-  };
-
-  const toggleLopDieuChuyen = (lopId) => {
-    const current = formData.phanCong.lopDieuChuyen || [];
-    const normalizedId = String(lopId);
-    const next = current.some(id => String(id) === normalizedId)
-      ? current.filter(id => String(id) !== normalizedId)
-      : [...current, normalizedId];
-    updatePhanCong('lopDieuChuyen', next);
   };
 
   const toggleThuNghi = (thu) => {
@@ -658,7 +639,7 @@ function GiaoVienPage() {
                       </p>
                     )}
 
-                    {/* Lớp phân hiệu chính */}
+                    {/* Lớp phân hiệu chính (info) */}
                     {lopChinh.length > 0 && (
                       <div className="mb-2">
                         <div className="text-xs font-semibold text-green-700 uppercase mb-1">
@@ -666,41 +647,15 @@ function GiaoVienPage() {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {lopChinh.map(lop => (
-                            <label key={lop._id} className="inline-flex items-center gap-2 px-2 py-1 border border-green-300 rounded-lg text-sm bg-green-50 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={(formData.phanCong.lopDieuChuyen || []).some(id => String(id) === String(lop._id))}
-                                onChange={() => toggleLopDieuChuyen(lop._id)}
-                              />
+                            <span key={lop._id} className="inline-flex items-center gap-2 px-2 py-1 border border-green-300 rounded-lg text-sm bg-green-50">
                               {lop.tenLop} <span className="text-xs text-green-700">(chính)</span>
-                            </label>
+                            </span>
                           ))}
                         </div>
                       </div>
                     )}
 
-                    {/* Lớp phân hiệu khác (điều chuyển) */}
-                    {lopDieuChuyen.length > 0 && (
-                      <div>
-                        <div className="text-xs font-semibold text-orange-700 uppercase mb-1">
-                          Phân hiệu khác (điều chuyển):
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {lopDieuChuyen.map(lop => (
-                            <label key={lop._id} className="inline-flex items-center gap-2 px-2 py-1 border border-orange-300 rounded-lg text-sm bg-orange-50 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={(formData.phanCong.lopDieuChuyen || []).some(id => String(id) === String(lop._id))}
-                                onChange={() => toggleLopDieuChuyen(lop._id)}
-                              />
-                              {lop.tenLop} ({lop.phanHieu || 'N/A'}) <span className="text-xs text-orange-700">(điều chuyển)</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {lopChinh.length === 0 && lopDieuChuyen.length === 0 && (
+                    {lopChinh.length === 0 && (
                       <p className="text-sm text-gray-500 italic">
                         Chưa có lớp có môn đã phân công phù hợp.
                       </p>

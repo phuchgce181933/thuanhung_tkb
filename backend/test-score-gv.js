@@ -1,6 +1,8 @@
 // Standalone test cho scoreGV - không cần MongoDB
 // Tách phần logic để xác nhận đúng với plan
 
+const tkbService = require('./services/tkbService');
+
 function scoreGV(gv, slot, gvBusy, gvNgaySet) {
   const nv = gv.nguyenVong || {};
 
@@ -124,6 +126,23 @@ const baseSlot = { thu: 3, buoi: 'sang', tiet: 2, key: '3-sang-2' };
   const busy = new Set();
   const ngay = new Set([2, 5]);
   assert('soBuoiToiDa only', scoreGV(gv, baseSlot, busy, ngay), -Infinity);
+}
+
+// Test 11: chỉ đếm buổi ở phân hiệu gốc của GV
+{
+  const gv = { _id: 'gv-home', hoTen: 'GV Home', phanHieu: 'PhanHieuA' };
+  const data = [
+    {
+      lop: { _id: 'lop-home', phanHieu: 'PhanHieuA' },
+      lopSchedule: [{ thu: 2, buoi: 'sang', tiets: [{ tiet: 1, giaoVien: 'gv-home', chuyenMon: 'Toán' }] }]
+    },
+    {
+      lop: { _id: 'lop-other', phanHieu: 'PhanHieuB' },
+      lopSchedule: [{ thu: 3, buoi: 'sang', tiets: [{ tiet: 1, giaoVien: 'gv-home', chuyenMon: 'Toán' }] }]
+    }
+  ];
+  const homeOnly = tkbService.buildGvSessionSets(data, [gv]);
+  assert('home-branch-only sessions', homeOnly.get('gv-home').size, 1);
 }
 
 console.log(`\nResult: ${pass} pass / ${fail} fail`);

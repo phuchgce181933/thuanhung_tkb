@@ -6,6 +6,7 @@
   "scripts": {
     "build:frontend": "npm --prefix frontend run build",
     "dev": "npm --prefix frontend run dev",
+    "dev:local": "node backend/scripts/run-local-dev.js",
     "package:dir": "npm run build:frontend && electron-builder --win --dir",
     "package": "npm run build:frontend && electron-builder --win",
     "start": "electron ."
