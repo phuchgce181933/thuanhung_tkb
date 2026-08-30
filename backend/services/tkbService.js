@@ -2886,12 +2886,25 @@ async function assignOverflow(namHoc, onProgress = () => {}) {
           // Duyệt qua tất cả tiết hiện có của GV ở các lớp KHÁC phân hiệu target,
           // tìm tiết mà khung giờ đó còn trống ở lop + hợp lệ ràng buộc.
           if (placed) break;
+          // Bảo vệ lịch phân hiệu CHÍNH của GV: KHÔNG MOVE từ phân hiệu chính.
+          // Lý do: GV đăng ký điều chuyển (phanHieuDieuChuyen === targetPhanHieu)
+          // chỉ nên được ADD tiết mới ở PH điều chuyển, không lấy tiết từ PH chính
+          // → tránh xóa tiết đang dạy ở phân hiệu gốc.
+          // Đồng thời cũng skip MOVE từ phân hiệu chính của GV cho mọi candidate,
+          // vì MOVE luôn lấy từ PH khác (PH đang "dư") chứ không phải từ PH gốc.
+          const gvPhanHieuChinh = (gv.phanHieu || '').trim();
           const gvOtherTiets = [];
           for (const otherTkb of allTkbs) {
             if (otherTkb._id.toString() === tkb._id.toString()) continue;
             const otherLop = lopById.get(otherTkb.lop.toString());
             const otherPh = (otherLop?.phanHieu || '').trim();
             if (otherPh === targetPhanHieu) continue; // chỉ MOVE từ phân hiệu khác
+            if (otherPh === gvPhanHieuChinh) {
+              // Không lấy tiết từ phân hiệu CHÍNH của GV (tránh phá lịch PH gốc).
+              // Nếu GV chỉ dạy ở PH chính + 1 số tiết điều chuyển (không có PH trung gian),
+              // thì MOVE không có nguồn → GV này bỏ qua, thử GV khác.
+              continue;
+            }
             for (const ngay of otherTkb.ngayTrongTuan || []) {
               for (const tiet of ngay.tiets || []) {
                 if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
