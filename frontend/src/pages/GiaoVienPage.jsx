@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { giaoVienAPI } from '../services/api';
+import { giaoVienAPI, lopAPI } from '../services/api';
 
 const CHUYEN_MON_LIST = [
   'Toán', 'Tiếng Việt', 'Tiếng Anh', 'Khoa học', 
@@ -8,26 +8,43 @@ const CHUYEN_MON_LIST = [
   'Tin học', 'Công nghệ'
 ];
 
+const normalizeText = (value) => String(value || '').trim().toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
 function GiaoVienPage() {
   const [giaoViens, setGiaoViens] = useState([]);
+  const [lopList, setLopList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingGV, setEditingGV] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterPhanHieu, setFilterPhanHieu] = useState('');
   const [formData, setFormData] = useState({
     hoTen: '',
+    phanHieu: '',
+    phanHieuDieuChuyen: '',
     chuyenMon: [],
     trangThai: 'active',
     nguyenVong: {
       soBuoiToiDa: null,
       buoiUuTien: 'ca_hai',
       thuNghi: []
+    },
+    phanCong: {
+      phanCongKiemNhiem: '',
+      soTietKiemNhiem: 0,
+      soTietDinhMuc: 0,
+      soTietDuocPhanCong: 0,
+      soTietDieuChuyen: 0,
+      lopDieuChuyen: [],
+      tongSoTietDuThieu: 0
     }
   });
 
   useEffect(() => {
     fetchGiaoViens();
+    fetchLops();
   }, []);
 
   const fetchGiaoViens = async () => {
@@ -44,13 +61,30 @@ function GiaoVienPage() {
     }
   };
 
+  const fetchLops = async () => {
+    try {
+      const response = await lopAPI.getAll();
+      setLopList(response.data.data || []);
+    } catch (err) {
+      console.error('Không thể tải danh sách lớp:', err);
+      setLopList([]);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      const eligibleClassIds = new Set(lopPhuHop.map(lop => String(lop._id)));
+      const selectedClassIds = (formData.phanCong.lopDieuChuyen || [])
+        .filter(lopId => eligibleClassIds.has(String(lopId)));
+      const submitData = {
+        ...formData,
+        phanCong: { ...formData.phanCong, lopDieuChuyen: selectedClassIds }
+      };
       if (editingGV) {
-        await giaoVienAPI.update(editingGV._id, formData);
+        await giaoVienAPI.update(editingGV._id, submitData);
       } else {
-        await giaoVienAPI.create(formData);
+        await giaoVienAPI.create(submitData);
       }
       fetchGiaoViens();
       closeModal();
@@ -65,10 +99,36 @@ function GiaoVienPage() {
     thuNghi: []
   });
 
+  const emptyPhanCong = () => ({
+    phanCongKiemNhiem: '',
+    soTietKiemNhiem: 0,
+    soTietDinhMuc: 0,
+    soTietDuocPhanCong: 0,
+    soTietDieuChuyen: 0,
+    lopDieuChuyen: [],
+    tongSoTietDuThieu: 0
+  });
+
+  const calculatePhanCongDinhMuc = (phanCong = {}) => {
+    const soTietKiemNhiem = Number(phanCong.soTietKiemNhiem || 0);
+    const soTietDinhMuc = Number(phanCong.soTietDinhMuc || 0);
+    return Math.max(0, soTietDinhMuc - soTietKiemNhiem);
+  };
+
+  const calculateDuThieu = (phanCong = {}) => {
+    const soTietDuocPhanCong = Number(phanCong.soTietDuocPhanCong || 0);
+    const soTietKiemNhiem = Number(phanCong.soTietKiemNhiem || 0);
+    const soTietDieuChuyen = Number(phanCong.soTietDieuChuyen || 0);
+    const soTietDinhMuc = Number(phanCong.soTietDinhMuc || 0);
+    return soTietDuocPhanCong + soTietKiemNhiem + soTietDieuChuyen - soTietDinhMuc;
+  };
+
   const handleEdit = (gv) => {
     setEditingGV(gv);
     setFormData({
       hoTen: gv.hoTen,
+      phanHieu: gv.phanHieu || '',
+      phanHieuDieuChuyen: gv.phanHieuDieuChuyen || '',
       chuyenMon: gv.chuyenMon || [],
       trangThai: gv.trangThai || 'active',
       nguyenVong: gv.nguyenVong
@@ -77,7 +137,18 @@ function GiaoVienPage() {
             buoiUuTien: gv.nguyenVong.buoiUuTien || 'ca_hai',
             thuNghi: gv.nguyenVong.thuNghi || []
           }
-        : emptyNguyenVong()
+        : emptyNguyenVong(),
+      phanCong: gv.phanCong
+        ? {
+            phanCongKiemNhiem: gv.phanCong.phanCongKiemNhiem || '',
+            soTietKiemNhiem: Number(gv.phanCong.soTietKiemNhiem || 0),
+            soTietDinhMuc: Number(gv.phanCong.soTietDinhMuc || 0),
+            soTietDuocPhanCong: Number(gv.phanCong.soTietDuocPhanCong || 0),
+            soTietDieuChuyen: Number(gv.phanCong.soTietDieuChuyen || 0),
+            lopDieuChuyen: gv.phanCong.lopDieuChuyen || [],
+            tongSoTietDuThieu: Number(gv.phanCong.tongSoTietDuThieu || calculateDuThieu(gv.phanCong))
+          }
+        : emptyPhanCong()
     });
     setShowModal(true);
   };
@@ -97,9 +168,12 @@ function GiaoVienPage() {
     setEditingGV(null);
     setFormData({
       hoTen: '',
+      phanHieu: '',
+      phanHieuDieuChuyen: '',
       chuyenMon: [],
       trangThai: 'active',
-      nguyenVong: emptyNguyenVong()
+      nguyenVong: emptyNguyenVong(),
+      phanCong: emptyPhanCong()
     });
     setShowModal(true);
   };
@@ -108,6 +182,28 @@ function GiaoVienPage() {
     setShowModal(false);
     setEditingGV(null);
   };
+
+  const phanHieuOptions = [...new Set([
+    ...lopList.map(lop => lop.phanHieu).filter(Boolean),
+    formData.phanHieu
+  ])].sort((first, second) => first.localeCompare(second, 'vi', { numeric: true }));
+
+  // Lọc lớp theo chuyên môn VÀ phân hiệu.
+  // Mặc định: chỉ hiển thị lớp thuộc phân hiệu của GV (nếu GV có phanHieu).
+  // Lớp thuộc phân hiệu khác = lớp "điều chuyển" tiềm năng (đánh dấu badge).
+  const lopPhuHop = lopList.filter(lop => {
+    const teacherSubjects = formData.chuyenMon.map(cm => normalizeText(cm.tenChuyenMon));
+    const hasAssignedSubject = (lop.chuyenMons || []).some(cm =>
+      teacherSubjects.includes(normalizeText(cm.tenChuyenMon))
+    );
+    if (!hasAssignedSubject) return false;
+    // Nếu GV chưa có phân hiệu → hiển thị tất cả
+    if (!formData.phanHieu) return true;
+    // Ưu tiên lớp cùng phân hiệu; vẫn hiển thị lớp khác phân hiệu (để user chọn điều chuyển)
+    return true;
+  });
+  const lopChinh = lopPhuHop.filter(lop => !formData.phanHieu || lop.phanHieu === formData.phanHieu);
+  const lopDieuChuyen = lopPhuHop.filter(lop => formData.phanHieu && lop.phanHieu !== formData.phanHieu);
 
   const addChuyenMon = () => {
     setFormData({
@@ -136,6 +232,26 @@ function GiaoVienPage() {
     });
   };
 
+  const updatePhanCong = (field, value) => {
+    const nextPhanCong = { ...formData.phanCong, [field]: value };
+    if (field !== 'tongSoTietDuThieu') {
+      nextPhanCong.tongSoTietDuThieu = calculateDuThieu(nextPhanCong);
+    }
+    setFormData({
+      ...formData,
+      phanCong: nextPhanCong
+    });
+  };
+
+  const toggleLopDieuChuyen = (lopId) => {
+    const current = formData.phanCong.lopDieuChuyen || [];
+    const normalizedId = String(lopId);
+    const next = current.some(id => String(id) === normalizedId)
+      ? current.filter(id => String(id) !== normalizedId)
+      : [...current, normalizedId];
+    updatePhanCong('lopDieuChuyen', next);
+  };
+
   const toggleThuNghi = (thu) => {
     const current = formData.nguyenVong.thuNghi || [];
     const next = current.includes(thu)
@@ -144,9 +260,16 @@ function GiaoVienPage() {
     updateNguyenVong('thuNghi', next);
   };
 
-  const filteredGVs = giaoViens.filter(gv =>
-    gv.hoTen.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const phanHieuFilterOptions = [...new Set([
+    ...lopList.map(lop => lop.phanHieu).filter(Boolean),
+    ...giaoViens.map(gv => gv.phanHieu).filter(Boolean)
+  ])].sort((first, second) => first.localeCompare(second, 'vi', { numeric: true }));
+
+  const filteredGVs = giaoViens.filter(gv => {
+    const matchesName = gv.hoTen.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesPhanHieu = !filterPhanHieu || gv.phanHieu === filterPhanHieu;
+    return matchesName && matchesPhanHieu;
+  });
 
   return (
     <div>
@@ -160,6 +283,16 @@ function GiaoVienPage() {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+          <select
+            value={filterPhanHieu}
+            onChange={(e) => setFilterPhanHieu(e.target.value)}
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Tất cả phân hiệu</option>
+            {phanHieuFilterOptions.map(phanHieu => (
+              <option key={phanHieu} value={phanHieu}>{phanHieu}</option>
+            ))}
+          </select>
           <button
             onClick={openModal}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
@@ -181,77 +314,79 @@ function GiaoVienPage() {
           <p className="mt-2 text-gray-600">Đang tải...</p>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="bg-white rounded-lg shadow overflow-x-auto">
           {filteredGVs.length === 0 ? (
-            <div className="col-span-full text-center py-8 text-gray-500">
+            <div className="text-center py-8 text-gray-500">
               Chưa có giáo viên nào.
             </div>
           ) : (
-            filteredGVs.map((gv) => (
-              <div key={gv._id} className="bg-white rounded-lg shadow p-4 hover:shadow-lg transition-shadow">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <h3 className="font-bold text-lg text-gray-800">{gv.hoTen}</h3>
-                  </div>
-                  <span className={`px-2 py-1 rounded text-xs ${
-                    gv.trangThai === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
-                  }`}>
-                    {gv.trangThai === 'active' ? 'Hoạt động' : 'Không hoạt động'}
-                  </span>
-                </div>
-                
-                <div className="mb-3">
-                  <p className="text-sm text-gray-600 mb-2">Chuyên môn:</p>
-                  <div className="flex flex-wrap gap-2">
-                    {gv.chuyenMon.map((cm, idx) => (
-                      <span key={idx} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-sm">
-                        {cm.tenChuyenMon} ({cm.soTietTuan} tiết)
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">STT</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Họ tên giáo viên</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Phân hiệu</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Chuyên môn</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Phân công</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nguyện vọng</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Trạng thái</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredGVs.map((gv, index) => (
+                  <tr key={gv._id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-sm text-gray-500">{index + 1}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">{gv.hoTen}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                      <div>{gv.phanHieu || 'Tất cả'}</div>
+                      {gv.phanHieuDieuChuyen && (
+                        <div className="text-xs text-orange-600 mt-0.5">
+                          → Điều chuyển: <b>{gv.phanHieuDieuChuyen}</b>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600">
+                      <div className="flex flex-wrap gap-1">
+                        {(gv.chuyenMon || []).map((cm, idx) => (
+                          <span key={idx} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs whitespace-nowrap">
+                            {cm.tenChuyenMon} ({cm.soTietTuan})
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                      Phân công định mức: {calculatePhanCongDinhMuc(gv.phanCong)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600">
+                      <div className="space-y-1 whitespace-nowrap">
+                        {gv.nguyenVong?.soBuoiToiDa && <div>Tối đa {gv.nguyenVong.soBuoiToiDa} buổi</div>}
+                        {gv.nguyenVong?.buoiUuTien && gv.nguyenVong.buoiUuTien !== 'ca_hai' && (
+                          <div>Ưu tiên {gv.nguyenVong.buoiUuTien === 'sang' ? 'sáng' : 'chiều'}</div>
+                        )}
+                        {gv.nguyenVong?.thuNghi?.length > 0 && (
+                          <div>Nghỉ: {gv.nguyenVong.thuNghi.map(thu => `T${thu}`).join(', ')}</div>
+                        )}
+                        {!gv.nguyenVong?.soBuoiToiDa && (!gv.nguyenVong?.buoiUuTien || gv.nguyenVong.buoiUuTien === 'ca_hai') && !gv.nguyenVong?.thuNghi?.length && (
+                          <span className="text-gray-400">Chưa thiết lập</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        gv.trangThai === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
+                      }`}>
+                        {gv.trangThai === 'active' ? 'Hoạt động' : 'Không hoạt động'}
                       </span>
-                    ))}
-                  </div>
-                </div>
-
-                {gv.nguyenVong && (
-                  (gv.nguyenVong.soBuoiToiDa || (gv.nguyenVong.buoiUuTien && gv.nguyenVong.buoiUuTien !== 'ca_hai') || (gv.nguyenVong.thuNghi && gv.nguyenVong.thuNghi.length > 0))
-                ) && (
-                  <div className="mb-3 pt-3 border-t border-gray-100">
-                    <p className="text-sm text-gray-600 mb-2">Nguyện vọng:</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {gv.nguyenVong.soBuoiToiDa && (
-                        <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs">
-                          Tối đa {gv.nguyenVong.soBuoiToiDa} buổi/tuần
-                        </span>
-                      )}
-                      {gv.nguyenVong.buoiUuTien && gv.nguyenVong.buoiUuTien !== 'ca_hai' && (
-                        <span className="bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded text-xs">
-                          Ưu tiên: {gv.nguyenVong.buoiUuTien === 'sang' ? 'Sáng' : 'Chiều'}
-                        </span>
-                      )}
-                      {gv.nguyenVong.thuNghi && gv.nguyenVong.thuNghi.length > 0 && (
-                        <span className="bg-pink-100 text-pink-700 px-2 py-0.5 rounded text-xs">
-                          Nghỉ: {gv.nguyenVong.thuNghi.map(t => `T${t}`).join(', ')}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex justify-end gap-2 mt-4 pt-3 border-t">
-                  <button
-                    onClick={() => handleEdit(gv)}
-                    className="text-blue-600 hover:text-blue-900 text-sm font-medium"
-                  >
-                    Sửa
-                  </button>
-                  <button
-                    onClick={() => handleDelete(gv._id)}
-                    className="text-red-600 hover:text-red-900 text-sm font-medium"
-                  >
-                    Xóa
-                  </button>
-                </div>
-              </div>
-            ))
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm font-medium whitespace-nowrap">
+                      <button onClick={() => handleEdit(gv)} className="text-blue-600 hover:text-blue-900 mr-4">Sửa</button>
+                      <button onClick={() => handleDelete(gv._id)} className="text-red-600 hover:text-red-900">Xóa</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}
@@ -279,6 +414,43 @@ function GiaoVienPage() {
                     placeholder="Nhập họ tên giáo viên"
                     required
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Phân hiệu
+                  </label>
+                  <select
+                    value={formData.phanHieu}
+                    onChange={(e) => setFormData({ ...formData, phanHieu: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Tất cả phân hiệu</option>
+                    {phanHieuOptions.map(phanHieu => (
+                      <option key={phanHieu} value={phanHieu}>{phanHieu}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Phân hiệu ưu tiên điều chuyển
+                  </label>
+                  <select
+                    value={formData.phanHieuDieuChuyen || ''}
+                    onChange={(e) => setFormData({ ...formData, phanHieuDieuChuyen: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">-- Không điều chuyển --</option>
+                    {phanHieuOptions
+                      .filter(ph => ph !== formData.phanHieu)
+                      .map(phanHieu => (
+                        <option key={phanHieu} value={phanHieu}>{phanHieu}</option>
+                      ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Khi đã dạy đủ định mức tại phân hiệu chính, GV sẽ được ưu tiên điều chuyển sang phân hiệu này (nếu phân hiệu đó đang thiếu).
+                  </p>
                 </div>
                 
                 <div>
@@ -346,6 +518,63 @@ function GiaoVienPage() {
                     <option value="active">Hoạt động</option>
                     <option value="inactive">Không hoạt động</option>
                   </select>
+                </div>
+
+                <div className="pt-3 border-t border-gray-200">
+                  <h4 className="text-sm font-semibold text-gray-800 mb-3">
+                    Phân công
+                  </h4>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Phân công kiêm nhiệm
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.phanCong.phanCongKiemNhiem}
+                        onChange={(e) => updatePhanCong('phanCongKiemNhiem', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Ví dụ: Dạy thay 1A2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Số tiết kiêm nhiệm
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={formData.phanCong.soTietKiemNhiem}
+                        onChange={(e) => updatePhanCong('soTietKiemNhiem', Number(e.target.value || 0))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Số tiết định mức
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={formData.phanCong.soTietDinhMuc}
+                        onChange={(e) => updatePhanCong('soTietDinhMuc', Number(e.target.value || 0))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Tổng số tiết Dư-Thiếu
+                      </label>
+                      <input
+                        type="number"
+                        value={formData.phanCong.tongSoTietDuThieu}
+                        readOnly
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 font-semibold"
+                      />
+                    </div>
+                  </div>
+
                 </div>
 
                 <div className="pt-3 border-t border-gray-200">
@@ -418,6 +647,65 @@ function GiaoVienPage() {
                     </p>
                   </div>
                 </div>
+
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Lớp theo chuyên môn
+                    </label>
+                    {!formData.phanHieu && (
+                      <p className="text-xs text-gray-500 italic mb-2">
+                        💡 GV chưa có phân hiệu → hiển thị tất cả lớp có môn phù hợp.
+                      </p>
+                    )}
+
+                    {/* Lớp phân hiệu chính */}
+                    {lopChinh.length > 0 && (
+                      <div className="mb-2">
+                        <div className="text-xs font-semibold text-green-700 uppercase mb-1">
+                          Phân hiệu chính ({formData.phanHieu || 'chưa rõ'}):
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {lopChinh.map(lop => (
+                            <label key={lop._id} className="inline-flex items-center gap-2 px-2 py-1 border border-green-300 rounded-lg text-sm bg-green-50 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={(formData.phanCong.lopDieuChuyen || []).some(id => String(id) === String(lop._id))}
+                                onChange={() => toggleLopDieuChuyen(lop._id)}
+                              />
+                              {lop.tenLop} <span className="text-xs text-green-700">(chính)</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Lớp phân hiệu khác (điều chuyển) */}
+                    {lopDieuChuyen.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-orange-700 uppercase mb-1">
+                          Phân hiệu khác (điều chuyển):
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {lopDieuChuyen.map(lop => (
+                            <label key={lop._id} className="inline-flex items-center gap-2 px-2 py-1 border border-orange-300 rounded-lg text-sm bg-orange-50 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={(formData.phanCong.lopDieuChuyen || []).some(id => String(id) === String(lop._id))}
+                                onChange={() => toggleLopDieuChuyen(lop._id)}
+                              />
+                              {lop.tenLop} ({lop.phanHieu || 'N/A'}) <span className="text-xs text-orange-700">(điều chuyển)</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {lopChinh.length === 0 && lopDieuChuyen.length === 0 && (
+                      <p className="text-sm text-gray-500 italic">
+                        Chưa có lớp có môn đã phân công phù hợp.
+                      </p>
+                    )}
+                  </div>
               </div>
               
               <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3 rounded-b-lg">

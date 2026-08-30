@@ -54,7 +54,7 @@ const lopController = {
   // Tạo mới lớp
   create: async (req, res) => {
     try {
-      const { tenLop, khoi, giaoVienChuNhiem } = req.body;
+      const { tenLop, khoi, phanHieu, giaoVienChuNhiem } = req.body;
 
       // Kiểm tra khối có tồn tại không
       const khoiExists = await Khoi.findById(khoi);
@@ -65,7 +65,7 @@ const lopController = {
         });
       }
 
-      const lop = new Lop({ tenLop, khoi, giaoVienChuNhiem });
+      const lop = new Lop({ tenLop, khoi, phanHieu: phanHieu || 'A', giaoVienChuNhiem });
       await lop.save();
       
       const lopPopulated = await Lop.findById(lop._id).populate('khoi', 'tenKhoi');
@@ -92,7 +92,7 @@ const lopController = {
   // Cập nhật lớp
   update: async (req, res) => {
     try {
-      const { tenLop, khoi, giaoVienChuNhiem } = req.body;
+      const { tenLop, khoi, phanHieu, giaoVienChuNhiem } = req.body;
 
       // Kiểm tra khối có tồn tại không
       if (khoi) {
@@ -107,7 +107,7 @@ const lopController = {
 
       const lop = await Lop.findByIdAndUpdate(
         req.params.id,
-        { tenLop, khoi, giaoVienChuNhiem },
+        { tenLop, khoi, phanHieu: phanHieu || 'A', giaoVienChuNhiem },
         { new: true, runValidators: true }
       ).populate('khoi', 'tenKhoi');
 

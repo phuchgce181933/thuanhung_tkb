@@ -14,6 +14,7 @@ const GiaoVien = require('../models/GiaoVien');
 const Lop = require('../models/Lop');
 const ThoiKhoaBieu = require('../models/ThoiKhoaBieu');
 const Khoi = require('../models/Khoi');
+const WarningLog = require('../models/WarningLog');
 
 // Cấu hình thời khóa biểu
 const TKB_CONFIG = {
@@ -380,6 +381,8 @@ function recomputeViPhamNV(lopSchedulesData, giaoViens, viPhamNVList) {
           viPhamNVList.push({
             ...it,
             gv: gv.hoTen,
+            gvId,
+            phanHieu: (gv.phanHieu || '').trim() || '—',
             lyDo: `vượt số buổi tối đa (${sessions.length}/${nv.soBuoiToiDa})`
           });
         }
@@ -396,6 +399,8 @@ function recomputeViPhamNV(lopSchedulesData, giaoViens, viPhamNVList) {
             viPhamNVList.push({
               ...it,
               gv: gv.hoTen,
+              gvId,
+              phanHieu: (gv.phanHieu || '').trim() || '—',
               lyDo: `vi phạm thứ nghỉ (thứ ${thu})`
             });
           }
@@ -1426,14 +1431,20 @@ function optimizeSessions(lopSchedulesData, giaoViens, gvBusy, gvBuoiSet, gvThuS
     const nv = gv.nguyenVong || {};
     const actual = (finalSessions.get(gvId) || new Set()).size;
     const desired = nv.soBuoiToiDa || null;
+    const phanHieu = (gv.phanHieu || '').trim();
     if (!desired) {
-      thongKeBuoi.push({ gv: gv.hoTen, desired: null, actual, satisfied: null, note: 'Không cấu hình nguyện vọng' });
+      thongKeBuoi.push({ gv: gv.hoTen, gvId, phanHieu, desired: null, actual, satisfied: null, note: 'Không cấu hình nguyện vọng' });
       continue;
     }
     const satisfied = actual <= desired;
     if (satisfied) soGVOptimized++;
     thongKeBuoi.push({
-      gv: gv.hoTen, desired, actual, satisfied,
+      gv: gv.hoTen,
+      gvId,
+      phanHieu,
+      desired,
+      actual,
+      satisfied,
       note: satisfied ? 'Đạt' : `Còn ${actual - desired} buổi vượt`
     });
   }
@@ -1453,23 +1464,50 @@ function optimizeSessions(lopSchedulesData, giaoViens, gvBusy, gvBuoiSet, gvThuS
  * - Với mỗi môn học, tìm giáo viên có chuyên môn, 
  *   đảm bảo GV đó không bận ở slot đó (với lớp khác)
  */
-async function autoGenerateTKB(namHoc) {
+async function autoGenerateTKB(namHoc, options = {}) {
   try {
+    // options = {
+    //   phanHieu: string | null   // nếu có, chỉ xếp các lớp thuộc phân hiệu này
+    //   clearOld: boolean         // mặc định true - xóa TKB cũ trước khi sinh
+    //   onProgress: function      // callback tiến độ
+    // }
+    const phanHieu = options.phanHieu || null;
+    const clearOld = options.clearOld !== false;
+    const onProgress = options.onProgress || (() => {});
+
     // 1. Load dữ liệu
     const khois = await Khoi.find().sort({ thuTu: 1 });
-    const lops = await Lop.find().populate('khoi');
+    let lops = await Lop.find().populate('khoi');
     const giaoViens = await GiaoVien.find({ trangThai: 'active' });
-    
+
+    // Lọc lớp theo phân hiệu (nếu có)
+    if (phanHieu) {
+      lops = lops.filter(l => (l.phanHieu || '') === phanHieu);
+    }
+
     if (lops.length === 0) {
-      return { success: false, message: 'Chưa có lớp nào để sắp xếp' };
+      return {
+        success: false,
+        message: phanHieu
+          ? `Phân hiệu "${phanHieu}" chưa có lớp nào để sắp xếp`
+          : 'Chưa có lớp nào để sắp xếp',
+      };
     }
     if (giaoViens.length === 0) {
       return { success: false, message: 'Chưa có giáo viên nào' };
     }
-    
-    // 2. Xóa TKB cũ
-    await ThoiKhoaBieu.deleteMany({ namHoc });
-    
+
+    // 2. Xóa TKB cũ (chỉ trong phạm vi lọc)
+    if (clearOld) {
+      if (phanHieu) {
+        // Xóa TKB của các lớp thuộc phân hiệu này (giữ lại TKB phân hiệu khác)
+        const lopIds = lops.map(l => l._id);
+        await ThoiKhoaBieu.deleteMany({ namHoc, lop: { $in: lopIds } });
+      } else {
+        await ThoiKhoaBieu.deleteMany({ namHoc });
+      }
+    }
+
     // 3. Khởi tạo
     const allSlots = generateAllSlots();
     
@@ -1606,6 +1644,8 @@ async function autoGenerateTKB(namHoc) {
     const errors = [];
     const skipped = [];
     const viPhamNVList = []; // danh sách các tiết buộc phải xếp GV vi phạm nguyện vọng
+    // Các trường hợp không thể xếp (gom lại để báo lỗi 1 lần có cấu trúc)
+    const unresolvable = []; // [{ lop, phanHieu, mon, needed, missing, reason }]
     
     
     // 4. Sắp xếp cho từng lớp
@@ -1640,13 +1680,28 @@ async function autoGenerateTKB(namHoc) {
 
       let tongTietXep = 0;
       
+      // === KHÓA GV CHO MỖI MÔN TRONG LỚP ===
+      // Theo yêu cầu: 1 môn của lớp phải do 1 GV duy nhất dạy (không chia cho nhiều GV).
+      // Nếu GV đó không đủ slot, vẫn cho dạy (tăng tiết vượt định mức) thay vì đổi sang GV khác.
+      // Map: tenChuyenMon -> gvId đã khóa cho lớp này.
+      const lockedMonGV = new Map();
+
       for (const cm of sortedCM) {
         const gvList = gvByChuyenMon.get(cm.tenChuyenMon) || [];
         if (gvList.length === 0) {
+          unresolvable.push({
+            lop: lop.tenLop,
+            lopId: lop._id,
+            phanHieu: lop.phanHieu || '(chưa gán)',
+            mon: cm.tenChuyenMon,
+            needed: cm.soTietTuan,
+            missing: cm.soTietTuan,
+            reason: 'no_gv',
+          });
           errors.push(`Lớp ${lop.tenLop}: Không có GV dạy "${cm.tenChuyenMon}"`);
           continue;
         }
-        
+
         let remaining = cm.soTietTuan;
 
         // Tách GV thành 2 nhóm theo NV:
@@ -1658,10 +1713,78 @@ async function autoGenerateTKB(namHoc) {
           const bCount = gvBusy.get(b._id.toString()).size;
           return aCount - bCount;
         };
-        const gvCoNVList = gvList.filter(g => gvCoNV(g)).sort(sortByTiet);
-        const gvKhongNVList = gvList.filter(g => !gvCoNV(g)).sort(sortByTiet);
-        // Gộp lại để pass 3,4 vẫn duyệt tất cả
-        const sortedGV = [...gvList].sort(sortByTiet);
+        // === LOGIC KHÓA GV ===
+        // Nếu môn này đã có GV khóa (từ tiết trước của cùng môn trong lớp),
+        // CHỈ sử dụng GV đó. Nếu không, dùng danh sách đầy đủ để chọn.
+        const lockedGVId = lockedMonGV.get(cm.tenChuyenMon);
+        let gvCoNVList, gvKhongNVList, sortedGV;
+
+        // === SẮP THEO PHÂN HIỆU: ƯU TIÊN GV CÙNG PHÂN HIỆU ===
+        // Khi chạy autoGenerateByPhanHieu(phanHieu), GV cùng phân hiệu với lớp
+        // phải được ưu tiên TUYỆT ĐỐI (không phải chỉ +300 điểm). Lý do:
+        //  - Một GV ở phân hiệu khác có NV (thuNghi, soBuoiToiDa, buoiUuTien)
+        //    sẽ được xếp vào gvCoNVList (Bước 1) TRƯỚC GV cùng phân hiệu không NV,
+        //    dẫn đến tiết bị "lấy mất" khỏi phân hiệu đúng của lớp.
+        //  - Kết quả: GV ở phân hiệu chính (như PHAN THỊ NHÃ - Mỹ thuật - Chính)
+        //    bị bỏ qua hoàn toàn, không được xếp tiết nào.
+        // Quy tắc phân nhóm GV khi có phanHieu option:
+        //  - Ưu tiên 1: GV cùng phanHieu (cô Nhã ở Chính cho lớp ở Chính) → gvCoNVList
+        //  - Ưu tiên 2: GV khác phanHieu (chỉ dùng khi không đủ GV cùng phan hiệu) → gvKhongNVList
+        const lopPhanHieu = (lop.phanHieu || '').trim();
+        const isPhanHieuMode = !!phanHieu && !!lopPhanHieu;
+
+        if (lockedGVId) {
+          // GV đã bị khóa - chỉ dùng GV này
+          const lockedGV = gvList.find(g => g._id.toString() === lockedGVId);
+          if (lockedGV) {
+            gvCoNVList = gvCoNV(lockedGV) ? [lockedGV] : [];
+            gvKhongNVList = gvCoNV(lockedGV) ? [] : [lockedGV];
+            sortedGV = [lockedGV];
+          } else {
+            // Không tìm thấy GV đã khóa (lỗi) - fallback danh sách đầy đủ
+            gvCoNVList = gvList.filter(g => gvCoNV(g)).sort(sortByTiet);
+            gvKhongNVList = gvList.filter(g => !gvCoNV(g)).sort(sortByTiet);
+            sortedGV = [...gvList].sort(sortByTiet);
+          }
+        } else if (isPhanHieuMode) {
+          // === PHÂN HIỆU MODE: CHỈ DÙNG GV CÙNG PHÂN HIỆU ===
+          // Khi sắp TKB cho phân hiệu X, CHỈ dùng GV thuộc phân hiệu X.
+          // GV khác phân hiệu tuyệt đối KHÔNG được dùng (kể cả có NV).
+          // Nếu thiếu GV cho 1 môn → báo lỗi, bỏ qua môn đó cho lớp đó.
+          // Việc điều chuyển GV giữa phân hiệu là chức năng riêng, không tự động.
+          const cungPhanHieu = gvList.filter(g => (g.phanHieu || '').trim() === lopPhanHieu);
+
+          // Trong nhóm cùng phân hiệu: ưu tiên GV có NV trước, sau đến không NV.
+          gvCoNVList = cungPhanHieu.filter(g => gvCoNV(g)).sort(sortByTiet);
+          gvKhongNVList = cungPhanHieu.filter(g => !gvCoNV(g)).sort(sortByTiet);
+          sortedGV = [...cungPhanHieu].sort(sortByTiet);
+
+          // Nếu KHÔNG CÓ bất kỳ GV nào cùng phân hiệu cho môn này → báo lỗi và bỏ qua môn.
+          if (cungPhanHieu.length === 0) {
+            unresolvable.push({
+              lop: lop.tenLop,
+              lopId: lop._id,
+              phanHieu: lop.phanHieu || '(chưa gán)',
+              mon: cm.tenChuyenMon,
+              needed: cm.soTietTuan,
+              missing: cm.soTietTuan,
+              reason: 'no_gv_in_phanhieu',
+            });
+            errors.push(`Lớp ${lop.tenLop}: Không có GV dạy "${cm.tenChuyenMon}" tại phân hiệu "${lopPhanHieu}" (điều chuyển GV từ phân hiệu khác sẽ xử lý sau)`);
+            remaining = 0; // skip hết môn này
+            continue; // next môn
+          }
+        } else {
+          // Chưa khóa GV cho môn này - dùng danh sách đầy đủ (toàn trường)
+          gvCoNVList = gvList.filter(g => gvCoNV(g)).sort(sortByTiet);
+          gvKhongNVList = gvList.filter(g => !gvCoNV(g)).sort(sortByTiet);
+          // Gộp lại để pass 3,4 vẫn duyệt tất cả
+          sortedGV = [...gvList].sort(sortByTiet);
+        }
+
+        // === THEO DÕI GV ĐẦU TIÊN ĐƯỢC CHỌN ===
+        // Khi lần đầu commit 1 tiết cho môn này, khóa GV đó.
+        const firstChosenGVId = { value: null };
         
         // Hướng B: Ưu tiên GV có NV trước.
 // Trong mỗi môn của lớp:
@@ -1674,6 +1797,7 @@ async function autoGenerateTKB(namHoc) {
         //  - Cùng thứ + KHÁC buổi (T3 sáng có rồi, thêm T3 chiều) -> ưu tiên vừa
         //  - Khác thứ -> mở ngày mới (chỉ chọn khi cần)
         //  - Phạt rất nặng nếu đã gần đạt soBuoiToiDa mà còn mở ngày mới
+        const MON_DAT_BIET = new Set(['Tin học', 'Công nghệ']);
         const findBestSlotForGV = (gv, respectNV, allowBusy = false) => {
           const gvId = gv._id.toString();
           let bestSlot = null;
@@ -1686,6 +1810,32 @@ async function autoGenerateTKB(namHoc) {
             const buoiMonKey = `${slot.thu}-${slot.buoi}-${cm.tenChuyenMon}`;
             if ((lopBuoiMonCount.get(buoiMonKey) || 0) >= 1) {
               continue; // skip slot - môn này đã có tiết trong buổi này rồi
+            }
+            // === RÀNG BUỘC CHẶN CỨNG: MÔN ĐẶC BIỆT KHÔNG ĐƯỢC XẾP CẠNH NHAU ===
+            // Với Tin học và Công nghệ: nếu trong cùng buổi (thu+buoi) đã có tiết
+            // của cùng môn này ở vị trí cạnh (|tiet_existing - slot.tiet| = 1) → skip slot.
+            // Đây là HARD CONSTRAINT, không bao giờ vi phạm.
+            if (MON_DAT_BIET.has(cm.tenChuyenMon)) {
+              // Tìm tất cả tiết cùng môn trong buổi này (của lớp hiện tại)
+              for (const ngay of lopSchedule) {
+                if (ngay.thu === slot.thu && ngay.buoi === slot.buoi) {
+                  for (const existingTiet of ngay.tiets) {
+                    if (existingTiet.chuyenMon === cm.tenChuyenMon) {
+                      if (Math.abs(existingTiet.tiet - slot.tiet) === 1) {
+                        // Skip slot này - môn đặc biệt không được xếp cạnh nhau
+                        // Dùng flag để break cả vòng lặp
+                        slot._skipMonDatBiet = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (slot._skipMonDatBiet) break;
+                }
+              }
+              if (slot._skipMonDatBiet) {
+                delete slot._skipMonDatBiet;
+                continue;
+              }
             }
             // Mặc định skip slot GV đã bận. Khi allowBusy=true (Bước 3 bắt buộc),
             // vẫn cho phép trùng nhưng phạt điểm rất nặng để ưu tiên slot không trùng.
@@ -1767,6 +1917,19 @@ async function autoGenerateTKB(namHoc) {
               }
             }
 
+            // === ƯU TIÊN GV CÙNG PHÂN HIỆU VỚI LỚP ===
+            // Theo yêu cầu: sắp theo phân hiệu - GV ở cùng phân hiệu với lớp được ưu tiên.
+            // Bonus lớn (+300) cho GV cùng phân hiệu; phạt nhẹ (-100) cho GV khác phân hiệu.
+            const lopPhanHieu = (lop.phanHieu || '').toString().trim();
+            const gvPhanHieu = (gv.phanHieu || '').toString().trim();
+            if (lopPhanHieu) {
+              if (gvPhanHieu === lopPhanHieu) {
+                score += 300; // rất thưởng - cùng phân hiệu
+              } else if (gvPhanHieu) {
+                score -= 100; // phạt - GV ở phân hiệu khác
+              }
+            }
+
             if (score > bestScore) {
               bestScore = score;
               bestSlot = slot;
@@ -1780,6 +1943,14 @@ async function autoGenerateTKB(namHoc) {
           gvBusy.get(gvId).add(slot.key);
           gvBuoiSet.get(gvId).add(`${slot.thu}-${slot.buoi}`);
           gvThuSet.get(gvId).add(slot.thu);
+
+          // === KHÓA GV CHO MÔN NÀY TRONG LỚP ===
+          // Khi commit tiết đầu tiên cho môn, khóa GV lại.
+          // Tất cả các tiết sau của môn này sẽ dùng cùng GV.
+          if (firstChosenGVId.value === null) {
+            firstChosenGVId.value = gvId;
+            lockedMonGV.set(cm.tenChuyenMon, gvId);
+          }
 
           // === CẬP NHẬT "1 BUỔI 1 MÔN" ===
           const buoiMonKey = `${slot.thu}-${slot.buoi}-${cm.tenChuyenMon}`;
@@ -1799,6 +1970,9 @@ async function autoGenerateTKB(namHoc) {
             viPhamNVList.push({
               lop: lop.tenLop, chuyenMon: cm.tenChuyenMon,
               thu: slot.thu, buoi: slot.buoi, tiet: slot.tiet,
+              gv: gv.hoTen,
+              gvId,
+              phanHieu: (gv.phanHieu || '').trim() || '—',
               ...viPhamNV
             });
           }
@@ -1917,13 +2091,17 @@ async function autoGenerateTKB(namHoc) {
         }
 
         // Nếu vẫn thiếu tiết dù đã chạy tất cả bước:
-        // Lỗi nghiêm trọng - không thể cắt tiết.
+        // Gom vào mảng unresolvable để báo lỗi 1 lần ở cuối (group theo phân hiệu).
         if (remaining > 0) {
-          throw new Error(
-            `Không thể xếp đủ tiết: Lớp ${lop.tenLop} - Môn "${cm.tenChuyenMon}" ` +
-            `thiếu ${remaining}/${cm.soTietTuan} tiết. ` +
-            `Cần thêm giáo viên dạy môn này hoặc giảm số tiết yêu cầu của môn.`
-          );
+          unresolvable.push({
+            lop: lop.tenLop,
+            lopId: lop._id,
+            phanHieu: lop.phanHieu || '(chưa gán)',
+            mon: cm.tenChuyenMon,
+            needed: cm.soTietTuan,
+            missing: remaining,
+            reason: 'insufficient_slots',
+          });
         }
       }
       
@@ -1936,6 +2114,41 @@ async function autoGenerateTKB(namHoc) {
         tongTietXep
       });
     }
+
+    // Nếu có bất kỳ trường hợp không thể xếp → báo lỗi group theo phân hiệu
+    if (unresolvable.length > 0) {
+      const grouped = {}; // phanHieu -> [{ lop, mon, needed, missing, reason }]
+      for (const u of unresolvable) {
+        if (!grouped[u.phanHieu]) grouped[u.phanHieu] = [];
+        grouped[u.phanHieu].push(u);
+      }
+      const phanHieuEntries = Object.entries(grouped);
+      let msg = `⚠️ [SẮP THIẾU] Có ${unresolvable.length} lớp-môn không xếp được (sẽ điều chuyển sau), phân bổ ở ${phanHieuEntries.length} phân hiệu:\n\n`;
+      for (const [ph, cases] of phanHieuEntries) {
+        msg += `📍 Phân hiệu "${ph}" (${cases.length} lớp-môn):\n`;
+        for (const c of cases) {
+          const lyDo = c.reason === 'no_gv' || c.reason === 'no_gv_in_phanhieu'
+            ? 'không có GV dạy môn này'
+            : 'GV không đủ slot trống';
+          msg += `   • Lớp "${c.lop}" - môn "${c.mon}" thiếu ${c.missing}/${c.needed} tiết (${lyDo})\n`;
+        }
+        msg += '\n';
+      }
+      msg += '→ Hệ thống sẽ tự ghi nhận và điều chuyển sau khi bạn bấm nút "Sắp điều chuyển".\n';
+      // KHÔNG throw - tiếp tục save partial TKB + ghi WarningLog để điều chuyển sau
+      console.warn(msg);
+    }
+
+    // Chuẩn bị missingClasses để ghi vào WarningLog + trả về cho FE
+    const missingClasses = unresolvable.map(u => ({
+      lop: u.lop,
+      mon: u.mon,
+      soTietConThieu: u.missing,
+      phanHieu: u.phanHieu,
+      // lopId giữ nguyên ObjectId để khớp với schema, KHÔNG .toString()
+      lopId: u.lopId || null,
+      message: `thiếu ${u.missing}/${u.needed} tiết (${u.reason === 'no_gv' || u.reason === 'no_gv_in_phanhieu' ? 'không có GV dạy môn này' : 'GV không đủ slot trống'})`,
+    }));
 
     // ====== 4b. OPTIMIZATION PHASE ======
     // Sau khi sinh lịch ban đầu (greedy), tối ưu theo nguyện vọng giáo viên:
@@ -2001,30 +2214,804 @@ async function autoGenerateTKB(namHoc) {
       if (!gvViPhamUnique[v.gv]) {
         gvViPhamUnique[v.gv] = {
           tenGV: v.gv,
+          phanHieu: v.phanHieu || '—',
           soTiet: 0,
           lyDo: v.lyDo,
           chiTiet: []
         };
       }
       gvViPhamUnique[v.gv].soTiet += 1;
-      gvViPhamUnique[v.gv].chiTiet.push(`${v.lop} - ${v.mon} - T${v.thu}(${v.buoi}) tiết ${v.tiet}`);
+      gvViPhamUnique[v.gv].chiTiet.push(`${v.phanHieu ? `[${v.phanHieu}] ` : ''}${v.lop} - ${v.mon} - T${v.thu}(${v.buoi}) tiết ${v.tiet}`);
+    }
+
+    // ====== LỌC KẾT QUẢ THEO PHÂN HIỆU (nếu đang sắp theo phân hiệu) ======
+    // Khi chạy với options.phanHieu, chỉ trả về thống kê về GV thuộc phân hiệu đó.
+    // GV phân hiệu khác có actual=0 trong lần chạy này nên không hiển thị,
+    // tránh nhiễu thông tin về GV điều chuyển (xử lý ở bước "Sắp điều chuyển" riêng).
+    const runPhanHieu = options.phanHieu || null;
+
+    // Lọc thongKeBuoi: chỉ giữ GV có phanHieu khớp (hoặc GV không có phanHieu)
+    const filteredThongKeBuoi = runPhanHieu
+      ? optimizationReport.thongKeBuoi.filter(r => !r.phanHieu || r.phanHieu === runPhanHieu)
+      : optimizationReport.thongKeBuoi;
+
+    // Lọc viPhamNV.danhSachGV theo cùng logic
+    const filteredDanhSachGV = runPhanHieu
+      ? Object.values(gvViPhamUnique).filter(gv => !gv.phanHieu || gv.phanHieu === runPhanHieu || gv.phanHieu === '—')
+      : Object.values(gvViPhamUnique);
+
+    // Lọc lại viPhamNVList gốc để tongSoTiet phản ánh đúng số tiết phạm tại phân hiệu đang sắp
+    const filteredViPhamNVList = runPhanHieu
+      ? viPhamNVList.filter(v => !v.phanHieu || v.phanHieu === runPhanHieu || v.phanHieu === '—')
+      : viPhamNVList;
+
+    // ====== 6. Ghi WarningLog nếu có lớp-môn thiếu (để assignOverflow đọc lại sau) ======
+    if (missingClasses.length > 0) {
+      try {
+        // Chỉ giữ các case thuộc phân hiệu đang chạy (nếu có lọc)
+        const missingToSave = runPhanHieu
+          ? missingClasses.filter(mc => !mc.phanHieu || mc.phanHieu === runPhanHieu)
+          : missingClasses;
+
+        if (missingToSave.length > 0) {
+          // Merge với các case cũ ở phân hiệu khác (không ghi đè)
+          const existing = await WarningLog.findOne({ namHoc, type: 'unresolved' }).lean();
+          const others = existing
+            ? existing.missingClasses.filter(mc => runPhanHieu && mc.phanHieu !== runPhanHieu)
+            : [];
+          const merged = [...others, ...missingToSave];
+          // Dedup theo lopId + mon
+          const seen = new Set();
+          const dedup = merged.filter(mc => {
+            const key = `${mc.lopId || mc.lop}|${mc.mon}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          await WarningLog.findOneAndUpdate(
+            { namHoc, type: 'unresolved' },
+            {
+              $set: {
+                namHoc,
+                type: 'unresolved',
+                title: 'Lớp-môn chưa xếp được (chờ điều chuyển)',
+                message: `Có ${dedup.length} lớp-môn không xếp được tại các phân hiệu`,
+                missingClasses: dedup,
+                summary: {
+                  totalMissingClasses: dedup.length,
+                  totalMissingPeriods: dedup.reduce((s, mc) => s + (mc.soTietConThieu || 1), 0),
+                  lastUpdatedAt: new Date(),
+                },
+              },
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+          );
+          console.log(`[autoGenerateTKB] Saved ${dedup.length} unresolved cases to WarningLog`);
+        }
+      } catch (wlErr) {
+        console.warn('[autoGenerateTKB] Failed to save WarningLog:', wlErr.message);
+      }
+    } else if (runPhanHieu) {
+      // Không có missing ở phân hiệu này → xóa các case của phân hiệu này trong WarningLog
+      try {
+        const existing = await WarningLog.findOne({ namHoc, type: 'unresolved' }).lean();
+        if (existing) {
+          const remaining = existing.missingClasses.filter(mc => mc.phanHieu && mc.phanHieu !== runPhanHieu);
+          if (remaining.length === 0) {
+            await WarningLog.deleteOne({ namHoc, type: 'unresolved' });
+          } else if (remaining.length !== existing.missingClasses.length) {
+            await WarningLog.updateOne(
+              { namHoc, type: 'unresolved' },
+              { $set: { missingClasses: remaining, 'summary.totalMissingClasses': remaining.length } }
+            );
+          }
+        }
+      } catch (wlErr) {
+        console.warn('[autoGenerateTKB] Failed to clean WarningLog:', wlErr.message);
+      }
     }
 
     return {
       success: true,
+      partialSuccess: missingClasses.length > 0,
+      missingClasses: runPhanHieu
+        ? missingClasses.filter(mc => !mc.phanHieu || mc.phanHieu === runPhanHieu)
+        : missingClasses,
       message,
       results,
       skipped,
       warnings: errors.length > 0 ? errors : undefined,
-      viPhamNV: viPhamNVList.length > 0 ? {
-        tongSoTiet: viPhamNVList.length,
-        danhSachGV: Object.values(gvViPhamUnique)
+      viPhamNV: filteredDanhSachGV.length > 0 ? {
+        tongSoTiet: filteredViPhamNVList.length,
+        danhSachGV: filteredDanhSachGV
       } : null,
-      thongKeBuoi: optimizationReport.thongKeBuoi
+      thongKeBuoi: filteredThongKeBuoi
     };
-    
+
   } catch (error) {
     console.error('Error generating TKB:', error);
+    throw error;
+  }
+}
+
+/**
+ * Sắp xếp TKB cho 1 phân hiệu cụ thể (mới).
+ * - Chỉ xét các lớp có phanHieu khớp.
+ * - Ưu tiên GV cùng phân hiệu (bonus +300 điểm đã có trong findBestSlotForGV).
+ * - 1 môn của lớp luôn do 1 GV duy nhất dạy (logic đã có trong autoGenerateTKB).
+ * - Không xóa TKB của phân hiệu khác.
+ */
+async function autoGenerateByPhanHieu(namHoc, phanHieu, onProgress = () => {}) {
+  if (!phanHieu) {
+    return { success: false, message: 'Cần cung cấp phanHieu' };
+  }
+  return autoGenerateTKB(namHoc, {
+    phanHieu,
+    clearOld: true,
+    onProgress,
+  });
+}
+
+/**
+ * Sắp điều chuyển: GV dư ở phân hiệu chính sẽ được phân bổ sang phân hiệu thiếu.
+ * - Chạy SAU khi đã sắp theo phân hiệu (cho 1 hoặc nhiều phân hiệu).
+ * - Đánh dấu ghiChuDieuChuyen=true cho các tiết mới.
+ *
+ * Logic:
+ * 0. (MỚI) Đọc WarningLog.unresolved → giải quyết các lớp-môn còn thiếu từ
+ *    scheduler. Với mỗi case (lop, mon), tìm GV cùng chuyên môn (ưu tiên
+ *    gv.phanHieuDieuChuyen === phanHieu của lop) và xếp vào slot trống của
+ *    TKB hiện tại của lớp. Case đã giải quyết sẽ được XÓA khỏi WarningLog.
+ * 1. Với mỗi GV, tính soTietDaDay (chỉ đếm tiết dạy tại phân hiệu chính).
+ * 2. Tính soTietDangDu = max(0, soTietDaDay - soTietDinhMuc).
+ * 3. Với mỗi phân hiệu X (khác phanHieu của GV dư), tính soTietThieu:
+ *    - tổng tiết cần dạy (sum chuyenMons của các lớp) - tổng tiết đã xếp.
+ * 4. Match GV dư với phân hiệu thiếu:
+ *    - Ưu tiên 1: gv.phanHieuDieuChuyen === phanHieu thiếu.
+ *    - Ưu tiên 2: phân hiệu thiếu nhiều nhất.
+ * 5. Xếp tiết vào TKB của lớp thuộc phân hiệu thiếu (slot trống, GV không trùng).
+ * 6. Đánh dấu ghiChuDieuChuyen=true.
+ */
+async function assignOverflow(namHoc, onProgress = () => {}) {
+  try {
+    const giaoViens = await GiaoVien.find({ trangThai: 'active' });
+    const lops = await Lop.find().populate('khoi');
+    if (giaoViens.length === 0 || lops.length === 0) {
+      return { success: false, message: 'Thiếu GV hoặc lớp' };
+    }
+
+    onProgress(5, 'init', 'Khởi động sắp điều chuyển');
+
+    let allTkbs = await ThoiKhoaBieu.find({ namHoc });
+    const tkbByLop = new Map();
+    for (const tkb of allTkbs) {
+      tkbByLop.set(tkb.lop.toString(), tkb);
+    }
+    const lopById = new Map();
+    for (const lop of lops) {
+      lopById.set(lop._id.toString(), lop);
+    }
+    console.log(`[assignOverflow] ══════ DEBUG DATA STATE ══════`);
+    console.log(`[assignOverflow] namHoc=${namHoc}`);
+    console.log(`[assignOverflow] Tổng TKB trong DB cho năm học này: ${allTkbs.length}`);
+    console.log(`[assignOverflow] Tổng lớp trong DB: ${lops.length}`);
+    if (allTkbs.length > 0) {
+      // In ra một vài TKB để check
+      const sample = allTkbs.slice(0, 5);
+      console.log(`[assignOverflow] Mẫu TKB (5 cái đầu):`);
+      for (const tkb of sample) {
+        const lopIdStr = tkb.lop.toString();
+        const lop = lopById.get(lopIdStr);
+        let tietCount = 0;
+        for (const ngay of tkb.ngayTrongTuan || []) {
+          tietCount += (ngay.tiets || []).length;
+        }
+        console.log(`[assignOverflow]   - lopId=${lopIdStr} (${lop?.tenLop || '?'}) [PH:${lop?.phanHieu}] → ${tietCount} tiết, ${(tkb.ngayTrongTuan||[]).length} ngày`);
+      }
+      // Thống kê theo phân hiệu
+      const tkbsByPh = {};
+      for (const tkb of allTkbs) {
+        const lop = lopById.get(tkb.lop.toString());
+        const ph = lop?.phanHieu || '(không rõ)';
+        tkbsByPh[ph] = (tkbsByPh[ph] || 0) + 1;
+      }
+      console.log(`[assignOverflow] TKB theo phân hiệu:`, JSON.stringify(tkbsByPh));
+    }
+
+    // ====================================================================
+    // === Bước 0: Giải quyết các case unresolved từ WarningLog =============
+    // Chiến lược:
+    //   1. Thử ADD trực tiếp (slot trống + GV rảnh tại slot đó)
+    //   2. Nếu không ADD được → MOVE: lấy 1 tiết của GV ở phân hiệu khác
+    //      đang dạy môn tương tự/khác → chuyển sang lớp thiếu (cùng khung giờ).
+    // ====================================================================
+    const unresolvedLog = await WarningLog.findOne({ namHoc, type: 'unresolved' }).lean();
+    const unresolvedCases = unresolvedLog?.missingClasses || [];
+    const resolvedCases = [];
+    const stillUnresolved = [];
+
+    // Map lopId → phanHieu O(1), dùng chung cho cả unresolved loop và gvTeachCount
+    const lopPhanHieuById = new Map();
+    for (const lop of lops) {
+      lopPhanHieuById.set(lop._id.toString(), (lop.phanHieu || '').trim());
+    }
+    // Định mức đúng: phanCong.soTietDinhMuc - phanCong.soTietKiemNhiem
+    const calcDinhMuc = (gv) => Math.max(0,
+      Number(gv.phanCong?.soTietDinhMuc || 0)
+      - Number(gv.phanCong?.soTietKiemNhiem || 0)
+    );
+
+    if (unresolvedCases.length > 0) {
+      onProgress(8, 'unresolved', `Giải quyết ${unresolvedCases.length} case từ scheduler`);
+      const allSlots = generateAllSlots();
+      console.log(`\n[assignOverflow] ═══════════════════════════════════════════════════════`);
+      console.log(`[assignOverflow] Bắt đầu xử lý ${unresolvedCases.length} case unresolved`);
+      console.log(`[assignOverflow] Tổng GV trong hệ thống: ${giaoViens.length}`);
+      const gvByMonCount = {};
+      for (const gv of giaoViens) {
+        for (const cm of gv.chuyenMon || []) {
+          gvByMonCount[cm.tenChuyenMon] = (gvByMonCount[cm.tenChuyenMon] || 0) + 1;
+        }
+      }
+      console.log(`[assignOverflow] GV theo môn:`, JSON.stringify(gvByMonCount));
+      console.log(`[assignOverflow] Số lop trong lopById: ${lopById.size}, số TKB trong tkbByLop: ${tkbByLop.size}`);
+      // In 5 TKB keys đầu để xem định dạng
+      console.log(`[assignOverflow] 5 TKB keys đầu:`, Array.from(tkbByLop.keys()).slice(0, 5).join(', '));
+      console.log(`[assignOverflow] 5 lopById keys đầu:`, Array.from(lopById.keys()).slice(0, 5).join(', '));
+      // Check lopId của 3 case đầu
+      for (const uc of unresolvedCases.slice(0, 3)) {
+        const lkId = uc.lopId ? (uc.lopId.toString ? uc.lopId.toString() : String(uc.lopId)) : lops.find(l => l.tenLop === uc.lop)?._id?.toString();
+        const tk = lkId ? tkbByLop.get(lkId) : null;
+        const lp = lkId ? lopById.get(lkId) : null;
+        const tkStr = tk ? 'CÓ ' + (tk.ngayTrongTuan || []).length + ' ngày' : 'KHÔNG CÓ';
+        console.log(`[assignOverflow]   probe: lop="${uc.lop}" môn="${uc.mon}" | lopId=${lkId} (typeof=${typeof lkId}) | lop=${lp?.tenLop || '?'} | tkb=${tkStr}`);
+        // Test với các format khác nhau
+        const ucIdObj = uc.lopId;
+        const ucIdObjStr = uc.lopId ? uc.lopId.toString() : null;
+        console.log(`[assignOverflow]     uc.lopId raw type=${typeof ucIdObj}, str=${ucIdObjStr}`);
+      }
+
+      // Xây map: mỗi GV đang dạy bao nhiêu tiết (chỉ đếm tại phân hiệu chính)
+      // + soTietDinhMuc đúng từ phanCong.
+      // Mục đích: ưu tiên sort GV còn THIẾU slot (room > 0) trước khi tăng tiết GV đã đủ/vượt.
+      const gvCurrentTiet = new Map();
+      const gvDinhMuc = new Map();
+      for (const gv of giaoViens) {
+        const gvId = gv._id.toString();
+        const phanHieuChinh = (gv.phanHieu || '').trim();
+        let cnt = 0;
+        for (const tkb of allTkbs) {
+          const lopPhanHieu = lopPhanHieuById.get(tkb.lop.toString()) || '';
+          if (phanHieuChinh && lopPhanHieu !== phanHieuChinh) continue;
+          for (const ngay of tkb.ngayTrongTuan || []) {
+            for (const tiet of ngay.tiets || []) {
+              if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) cnt++;
+            }
+          }
+        }
+        gvCurrentTiet.set(gvId, cnt);
+        gvDinhMuc.set(gvId, calcDinhMuc(gv));
+      }
+
+      for (const uc of unresolvedCases) {
+        // uc.lopId trong DB có thể là string HOẶC ObjectId tùy version code cũ/mới
+        const lopId = uc.lopId
+          ? (uc.lopId.toString ? uc.lopId.toString() : String(uc.lopId))
+          : lops.find(l => l.tenLop === uc.lop)?._id?.toString();
+        const lop = lopId ? lopById.get(lopId) : null;
+        const tkb = lopId ? tkbByLop.get(lopId) : null;
+        if (!lop || !tkb) {
+          if (!lop) {
+            console.log(`[assignOverflow]   ❌ Lớp "${uc.lop}" môn "${uc.mon}" - LOPID KHÔNG TỒN TẠI trong DB (lopId=${uc.lopId}, typeof=${typeof uc.lopId}) → bỏ qua`);
+          } else {
+            console.log(`[assignOverflow]   ❌ Lớp "${uc.lop}" (${lop.tenLop}) môn "${uc.mon}" - LỚP KHÔNG CÓ TKB trong tkbByLop (lopId=${lop._id.toString()})`);
+          }
+          stillUnresolved.push(uc);
+          continue;
+        }
+        const targetPhanHieu = (lop.phanHieu || '').trim();
+        // Tìm GV dạy được môn này - ưu tiên phanHieuDieuChuyen khớp
+        let candidateGvs = giaoViens.filter(gv => {
+          const cms = (gv.chuyenMon || []).map(cm => cm.tenChuyenMon);
+          return cms.includes(uc.mon);
+        });
+        // Ưu tiên:
+        //   1. GV có phanHieuDieuChuyen === targetPhanHieu (đăng ký điều chuyển sang PH này)
+        //   2. GV cùng phanHieu targetPhanHieu
+        //   3. GV còn THIẾU slot nhiều nhất (room = định mức - current DESC).
+        //      → Nếu ai cũng đủ/vượt → ưu tiên người có room CAO NHẤT (gần đủ trước),
+        //        nếu vẫn bằng → ưu tiên người có current thấp hơn (san đều).
+        candidateGvs.sort((a, b) => {
+          const aMatch = (a.phanHieuDieuChuyen || '').trim() === targetPhanHieu ? 1 : 0;
+          const bMatch = (b.phanHieuDieuChuyen || '').trim() === targetPhanHieu ? 1 : 0;
+          if (aMatch !== bMatch) return bMatch - aMatch;
+          const aSame = (a.phanHieu || '').trim() === targetPhanHieu ? 1 : 0;
+          const bSame = (b.phanHieu || '').trim() === targetPhanHieu ? 1 : 0;
+          if (aSame !== bSame) return bSame - aSame;
+          const aCur = gvCurrentTiet.get(a._id.toString()) || 0;
+          const bCur = gvCurrentTiet.get(b._id.toString()) || 0;
+          const aDm = gvDinhMuc.get(a._id.toString()) || 23;
+          const bDm = gvDinhMuc.get(b._id.toString()) || 23;
+          const aRoom = aDm - aCur; // dương = còn thiếu, âm = đã vượt
+          const bRoom = bDm - bCur;
+          if (aRoom !== bRoom) return bRoom - aRoom;
+          // Cùng room → chọn người có current thấp hơn (san đều)
+          return aCur - bCur;
+        });
+        const candidateInfo = candidateGvs.map(g => {
+          const cur = gvCurrentTiet.get(g._id.toString()) || 0;
+          const dm = gvDinhMuc.get(g._id.toString()) || 23;
+          const room = dm - cur;
+          const roomStatus = room > 0 ? `thiếu${room}` : (room === 0 ? 'đủ' : `+${-room}`);
+          return `${g.hoTen}(PH:${g.phanHieu},${cur}/${dm}:${roomStatus})`;
+        });
+        if (candidateGvs.length === 0) {
+          console.log(`[assignOverflow]   ❌ Lớp "${uc.lop}" môn "${uc.mon}" - KHÔNG CÓ GV NÀO dạy môn này trong toàn hệ thống → bỏ qua`);
+          stillUnresolved.push(uc);
+          continue;
+        }
+        console.log(`[assignOverflow]   🔍 Lớp "${uc.lop}" môn "${uc.mon}" PH="${targetPhanHieu}" - ${candidateGvs.length} GV: ${candidateInfo.join(', ')}`);
+        // Slot đã dùng trong TKB của lớp
+        const usedSlotKeys = new Set();
+        for (const ngay of tkb.ngayTrongTuan || []) {
+          for (const tiet of ngay.tiets || []) {
+            usedSlotKeys.add(`${ngay.thu}-${ngay.buoi}-${tiet.tiet}`);
+          }
+        }
+        // Kiểm tra "1 buổi 1 môn" cho môn uc.mon
+        const tkbMonBuoi = new Set();
+        for (const ngay of tkb.ngayTrongTuan || []) {
+          for (const tiet of ngay.tiets || []) {
+            if (tiet.chuyenMon === uc.mon) {
+              tkbMonBuoi.add(`${ngay.thu}-${ngay.buoi}`);
+            }
+          }
+        }
+        // Helper: kiểm tra slot có hợp lệ với ràng buộc Tin học/Công nghệ cạnh nhau không
+        const isValidSlotForMon = (thu, buoi, tiet) => {
+          if (buoi === 'sang' && tiet === 1 && thu === 2) return false; // chào cờ
+          const buoiKey = `${thu}-${buoi}`;
+          if (tkbMonBuoi.has(buoiKey)) return false;
+          if (uc.mon === 'Tin học' || uc.mon === 'Công nghệ') {
+            const canhNhau = (tkb.ngayTrongTuan || []).some(ngay =>
+              ngay.thu === thu && ngay.buoi === buoi &&
+              ngay.tiets.some(t =>
+                (t.chuyenMon === 'Tin học' || t.chuyenMon === 'Công nghệ') &&
+                Math.abs(t.tiet - tiet) === 1
+              )
+            );
+            if (canhNhau) return false;
+          }
+          return true;
+        };
+
+        let placed = false;
+        let moveInfo = null;
+
+        for (const gv of candidateGvs) {
+          if (placed) break;
+          const gvId = gv._id.toString();
+          // GV busy slots (từ TKB các lớp khác)
+          const gvBusySlots = new Set();
+          for (const otherTkb of allTkbs) {
+            if (otherTkb._id.toString() === tkb._id.toString()) continue;
+            for (const ngay of otherTkb.ngayTrongTuan || []) {
+              for (const tiet of ngay.tiets || []) {
+                if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                  gvBusySlots.add(`${ngay.thu}-${ngay.buoi}-${tiet.tiet}`);
+                }
+              }
+            }
+          }
+          // === Bước A: thử ADD (slot trống + GV rảnh) ===
+          for (const slot of allSlots) {
+            if (usedSlotKeys.has(slot.key)) continue;
+            if (gvBusySlots.has(slot.key)) continue;
+            if (!isValidSlotForMon(slot.thu, slot.buoi, slot.tiet)) continue;
+            // OK - xếp vào đây
+            let ngay = tkb.ngayTrongTuan.find(n => n.thu === slot.thu && n.buoi === slot.buoi);
+            if (!ngay) {
+              ngay = { thu: slot.thu, buoi: slot.buoi, tiets: [] };
+              tkb.ngayTrongTuan.push(ngay);
+            }
+            ngay.tiets.push({
+              tiet: slot.tiet,
+              giaoVien: gv._id,
+              chuyenMon: uc.mon,
+              ghiChuDieuChuyen: true,
+              tuUnresolved: true,
+            });
+            ngay.tiets.sort((a, b) => a.tiet - b.tiet);
+            await tkb.save();
+            resolvedCases.push({
+              lop: uc.lop,
+              mon: uc.mon,
+              gvTen: gv.hoTen,
+              phanHieu: targetPhanHieu,
+              thu: slot.thu,
+              buoi: slot.buoi,
+              tiet: slot.tiet,
+              action: 'add',
+            });
+            console.log(`[assignOverflow]   ✅ ADD: ${gv.hoTen} → lớp "${uc.lop}" môn "${uc.mon}" T${slot.thu}(${slot.buoi}) tiết ${slot.tiet}`);
+            // Cập nhật current tiết cho GV để lần lặp sau sort đúng
+            gvCurrentTiet.set(gvId, (gvCurrentTiet.get(gvId) || 0) + 1);
+            placed = true;
+            break;
+          }
+
+          // === Bước B: thử MOVE (lấy 1 tiết của GV ở phân hiệu khác) ===
+          // Duyệt qua tất cả tiết hiện có của GV ở các lớp KHÁC phân hiệu target,
+          // tìm tiết mà khung giờ đó còn trống ở lop + hợp lệ ràng buộc.
+          if (placed) break;
+          const gvOtherTiets = [];
+          for (const otherTkb of allTkbs) {
+            if (otherTkb._id.toString() === tkb._id.toString()) continue;
+            const otherLop = lopById.get(otherTkb.lop.toString());
+            const otherPh = (otherLop?.phanHieu || '').trim();
+            if (otherPh === targetPhanHieu) continue; // chỉ MOVE từ phân hiệu khác
+            for (const ngay of otherTkb.ngayTrongTuan || []) {
+              for (const tiet of ngay.tiets || []) {
+                if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                  gvOtherTiets.push({ tkb: otherTkb, ngay, tiet });
+                }
+              }
+            }
+          }
+          // Ưu tiên MOVE tiết có cùng môn (giữ nguyên chuyenMon, chỉ đổi lớp)
+          // Sau đó mới MOVE tiết môn khác (sẽ chuyển thành uc.mon ở target)
+          gvOtherTiets.sort((a, b) => {
+            if (a.tiet.chuyenMon === uc.mon && b.tiet.chuyenMon !== uc.mon) return -1;
+            if (a.tiet.chuyenMon !== uc.mon && b.tiet.chuyenMon === uc.mon) return 1;
+            return 0;
+          });
+          for (const item of gvOtherTiets) {
+            const slotKey = `${item.ngay.thu}-${item.ngay.buoi}-${item.tiet.tiet}`;
+            if (usedSlotKeys.has(slotKey)) continue;
+            if (!isValidSlotForMon(item.ngay.thu, item.ngay.buoi, item.tiet.tiet)) continue;
+            // === THỰC HIỆN MOVE ===
+            const sourceLop = lopById.get(item.tkb.lop.toString());
+            const sourcePh = (sourceLop?.phanHieu || '').trim();
+            const sourceTietMon = item.tiet.chuyenMon;
+            // Xóa khỏi source
+            item.ngay.tiets = item.ngay.tiets.filter(t => t !== item.tiet);
+            if (item.ngay.tiets.length === 0) {
+              item.tkb.ngayTrongTuan = item.tkb.ngayTrongTuan.filter(n => n !== item.ngay);
+            }
+            // Cập nhật tiết - đổi môn thành uc.mon (nếu khác) + đánh dấu điều chuyển
+            item.tiet.chuyenMon = uc.mon;
+            item.tiet.ghiChuDieuChuyen = true;
+            item.tiet.tuUnresolved = true;
+            item.tiet.tuLop = item.tkb.lop;
+            item.tiet.tuPhanHieu = sourcePh;
+            // Thêm vào target
+            let ngay = tkb.ngayTrongTuan.find(n => n.thu === item.ngay.thu && n.buoi === item.ngay.buoi);
+            if (!ngay) {
+              ngay = { thu: item.ngay.thu, buoi: item.ngay.buoi, tiets: [] };
+              tkb.ngayTrongTuan.push(ngay);
+            }
+            ngay.tiets.push(item.tiet);
+            ngay.tiets.sort((a, b) => a.tiet - b.tiet);
+            await item.tkb.save();
+            await tkb.save();
+            moveInfo = {
+              sourceTietMon,
+              sourcePh,
+              sourceLop: sourceLop?.tenLop || '?',
+            };
+            resolvedCases.push({
+              lop: uc.lop,
+              mon: uc.mon,
+              gvTen: gv.hoTen,
+              phanHieu: targetPhanHieu,
+              thu: item.ngay.thu,
+              buoi: item.ngay.buoi,
+              tiet: item.tiet.tiet,
+              action: 'move',
+              tuLop: moveInfo.sourceLop,
+              tuPhanHieu: moveInfo.sourcePh,
+              tuMon: moveInfo.sourceTietMon,
+            });
+            const monChanged = sourceTietMon !== uc.mon ? `(đổi môn: ${sourceTietMon} → ${uc.mon})` : '(cùng môn)';
+            console.log(`[assignOverflow]   🔄 MOVE: ${gv.hoTen} từ lớp "${moveInfo.sourceLop}"[PH:${moveInfo.sourcePh}] T${item.ngay.thu}(${item.ngay.buoi}) tiết ${item.tiet.tiet} → lớp "${uc.lop}"[PH:${targetPhanHieu}] môn "${uc.mon}" ${monChanged}`);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          console.log(`[assignOverflow]   ⚠️ Lớp "${uc.lop}" môn "${uc.mon}" - đã thử ${candidateGvs.length} GV, không ADD/MOVE được → vẫn unresolved`);
+          stillUnresolved.push(uc);
+        }
+      }
+
+      // T�ng kết Bước 0
+      const moveCnt = resolvedCases.filter(r => r.action === 'move').length;
+      const addCnt = resolvedCases.filter(r => r.action === 'add').length;
+      console.log(`[assignOverflow] ─────────────────────────────────────────────────────`);
+      console.log(`[assignOverflow] Kết quả Bước 0: resolved=${resolvedCases.length} (add=${addCnt}, move=${moveCnt}) | stillUnresolved=${stillUnresolved.length}`);
+      console.log(`[assignOverflow] ═══════════════════════════════════════════════════════\n`);
+
+      // Cập nhật WarningLog - xóa các case đã giải quyết
+      try {
+        if (stillUnresolved.length === 0) {
+          await WarningLog.deleteOne({ namHoc, type: 'unresolved' });
+        } else {
+          await WarningLog.updateOne(
+            { namHoc, type: 'unresolved' },
+            {
+              $set: {
+                missingClasses: stillUnresolved,
+                message: `Còn ${stillUnresolved.length} lớp-môn không điều chuyển được`,
+                'summary.totalMissingClasses': stillUnresolved.length,
+              },
+            }
+          );
+        }
+      } catch (wlErr) {
+        console.warn('[assignOverflow] Failed to update WarningLog:', wlErr.message);
+      }
+    }
+
+    // Refresh allTkbs: lấy lại toàn bộ TKB sau khi unresolved đã được lưu
+    // (thay vì push thêm, để tránh duplicate 21+21 = 42 phần tử)
+    allTkbs = await ThoiKhoaBieu.find({ namHoc });
+    for (const tkb of allTkbs) {
+      tkbByLop.set(tkb.lop.toString(), tkb);
+    }
+
+      // === Tính số tiết ĐÃ DẠY (gvTeachCount) ===
+      // Chỉ đếm tiết tại phân hiệu = phanHieuChinh của GV
+      const gvTeachCount = new Map(); // gvId -> { gv, phanHieuChinh, soTietDaDay, soTietDinhMuc, soTietDangDu }
+      for (const gv of giaoViens) {
+        const gvId = gv._id.toString();
+        const phanHieuChinh = (gv.phanHieu || '').trim();
+        let soTietDaDay = 0;
+
+        for (const tkb of allTkbs) {
+          // Tra phanHieu của lớp từ map O(1) thay vì lops.find()
+          const lopPhanHieu = lopPhanHieuById.get(tkb.lop.toString()) || '';
+          // Chỉ đếm tiết tại phân hiệu = phanHieuChinh của GV
+          if (phanHieuChinh && lopPhanHieu !== phanHieuChinh) continue;
+          for (const ngay of tkb.ngayTrongTuan || []) {
+            for (const tiet of ngay.tiets || []) {
+              if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                soTietDaDay++;
+              }
+            }
+          }
+        }
+
+        const soTietDinhMuc = calcDinhMuc(gv);
+        const soTietDangDu = Math.max(0, soTietDaDay - soTietDinhMuc);
+        gvTeachCount.set(gvId, { gv, phanHieuChinh, soTietDaDay, soTietDinhMuc, soTietDangDu });
+      }
+
+    onProgress(15, 'count', `Đã tính số tiết ${gvTeachCount.size} GV`);
+
+    // === Bước 2: Tính soTietThieu cho mỗi phân hiệu ===
+    const phanHieuNeed = new Map(); // phanHieu -> { required, actual, soTietThieu, lops: [] }
+    for (const lop of lops) {
+      const ph = (lop.phanHieu || '').trim() || '(không rõ)';
+      if (!phanHieuNeed.has(ph)) {
+        phanHieuNeed.set(ph, {
+          phanHieu: ph,
+          required: 0,
+          actual: 0,
+          soTietThieu: 0,
+          lops: [],
+        });
+      }
+      const phInfo = phanHieuNeed.get(ph);
+      phInfo.lops.push(lop);
+      // Tổng tiết yêu cầu theo chuyenMons
+      for (const cm of lop.chuyenMons || []) {
+        phInfo.required += cm.soTietTuan || 0;
+      }
+      // Tổng tiết đã xếp
+      const tkb = tkbByLop.get(lop._id.toString());
+      if (tkb) {
+        for (const ngay of tkb.ngayTrongTuan || []) {
+          phInfo.actual += (ngay.tiets || []).length;
+        }
+      }
+      phInfo.soTietThieu = Math.max(0, phInfo.required - phInfo.actual);
+    }
+
+    onProgress(25, 'count', `Đã tính nhu cầu ${phanHieuNeed.size} phân hiệu`);
+
+    // === Bước 3: Match GV dư với phân hiệu thiếu ===
+    // Tạo danh sách GV dư, sắp theo số tiết dư giảm dần
+    const gvDuList = [...gvTeachCount.values()]
+      .filter(info => info.soTietDangDu > 0)
+      .sort((a, b) => b.soTietDangDu - a.soTietDangDu);
+
+    const allSlots = generateAllSlots();
+    let tongSoTietDieuChuyen = 0;
+    const lichSuDieuChuyen = []; // {gvTen, tuPhanHieu, denPhanHieu, lopTen, mon, thu, buoi, tiet}
+
+    for (const gvInfo of gvDuList) {
+      const gvId = gvInfo.gv._id.toString();
+      const phanHieuDieuChuyen = (gvInfo.gv.phanHieuDieuChuyen || '').trim();
+      let tietConDu = gvInfo.soTietDangDu;
+
+      while (tietConDu > 0) {
+        // Tìm phân hiệu thiếu phù hợp
+        let targetPhInfo = null;
+        // Ưu tiên 1: gv.phanHieuDieuChuyen (nếu có và đang thiếu)
+        if (phanHieuDieuChuyen && phanHieuNeed.has(phanHieuDieuChuyen)) {
+          const ph = phanHieuNeed.get(phanHieuDieuChuyen);
+          if (ph.soTietThieu > 0 && ph.phanHieu !== gvInfo.phanHieuChinh) {
+            targetPhInfo = ph;
+          }
+        }
+        // Ưu tiên 2: phân hiệu thiếu nhiều nhất (khác phanHieuChinh)
+        if (!targetPhInfo) {
+          const sortedPh = [...phanHieuNeed.values()]
+            .filter(ph => ph.soTietThieu > 0 && ph.phanHieu !== gvInfo.phanHieuChinh)
+            .sort((a, b) => b.soTietThieu - a.soTietThieu);
+          targetPhInfo = sortedPh[0] || null;
+        }
+        if (!targetPhInfo) break; // hết phân hiệu thiếu
+
+        // Tìm lớp trong phân hiệu target còn thiếu tiết
+        const targetLops = targetPhInfo.lops.filter(l => {
+          const tkb = tkbByLop.get(l._id.toString());
+          if (!tkb) return false;
+          const actual = (tkb.ngayTrongTuan || []).reduce(
+            (sum, ngay) => sum + (ngay.tiets || []).length, 0
+          );
+          const required = (l.chuyenMons || []).reduce((sum, cm) => sum + (cm.soTietTuan || 0), 0);
+          return actual < required;
+        });
+        if (targetLops.length === 0) {
+          targetPhInfo.soTietThieu = 0; // đánh dấu không thiếu nữa
+          continue;
+        }
+
+        // Xếp 1 tiết cho GV dư vào 1 lớp trong phân hiệu target
+        let xepDuocVongNay = false;
+        for (const lop of targetLops) {
+          const tkb = tkbByLop.get(lop._id.toString());
+          if (!tkb) continue;
+          // Tìm môn mà GV này có chuyên môn VÀ lớp còn thiếu
+          const gvChuyenMonSet = new Set(
+            (gvInfo.gv.chuyenMon || []).map(cm => cm.tenChuyenMon)
+          );
+          const lopChuyenMons = lop.chuyenMons || [];
+          // Đếm mỗi môn đã xếp bao nhiêu tiết trong lớp
+          const lopMonDaXep = new Map();
+          for (const ngay of tkb.ngayTrongTuan || []) {
+            for (const tiet of ngay.tiets || []) {
+              lopMonDaXep.set(tiet.chuyenMon, (lopMonDaXep.get(tiet.chuyenMon) || 0) + 1);
+            }
+          }
+          // Môn cần xếp: GV dạy được + lớp còn thiếu
+          const monCanXep = lopChuyenMons.find(cm =>
+            gvChuyenMonSet.has(cm.tenChuyenMon) &&
+            (lopMonDaXep.get(cm.tenChuyenMon) || 0) < (cm.soTietTuan || 0)
+          );
+          if (!monCanXep) continue;
+
+          // Tìm slot trống trong lớp này
+          const usedSlotKeys = new Set();
+          for (const ngay of tkb.ngayTrongTuan || []) {
+            for (const tiet of ngay.tiets || []) {
+              usedSlotKeys.add(`${ngay.thu}-${ngay.buoi}-${tiet.tiet}`);
+            }
+          }
+          // GV busy
+          const gvBusySlots = new Set();
+          for (const otherTkb of allTkbs) {
+            for (const ngay of otherTkb.ngayTrongTuan || []) {
+              for (const tiet of ngay.tiets || []) {
+                if (tiet.giaoVien && tiet.giaoVien.toString() === gvId) {
+                  gvBusySlots.add(`${ngay.thu}-${ngay.buoi}-${tiet.tiet}`);
+                }
+              }
+            }
+          }
+
+          // Sắp xếp slot theo thứ tự: tiết phù hợp với buổi (sáng 1-4, chiều 5-7)
+          let chosenSlot = null;
+          for (const slot of allSlots) {
+            if (usedSlotKeys.has(slot.key)) continue;
+            if (gvBusySlots.has(slot.key)) continue;
+            // Skip chào cờ
+            if (slot.buoi === 'sang' && slot.tiet === 1 && slot.thu === 2) continue;
+            // Kiểm tra "1 buổi 1 môn": nếu buổi đó đã có môn này → skip
+            const coMonTrongBuoi = (tkb.ngayTrongTuan || []).some(ngay =>
+              ngay.thu === slot.thu && ngay.buoi === slot.buoi &&
+              ngay.tiets.some(t => t.chuyenMon === monCanXep.tenChuyenMon)
+            );
+            if (coMonTrongBuoi) continue;
+            // Kiểm tra chặn cứng Tin học/CN cạnh nhau
+            const MON_DAT_BIET = new Set(['Tin học', 'Công nghệ']);
+            if (MON_DAT_BIET.has(monCanXep.tenChuyenMon)) {
+              const canhNhau = (tkb.ngayTrongTuan || []).some(ngay =>
+                ngay.thu === slot.thu && ngay.buoi === slot.buoi &&
+                ngay.tiets.some(t => t.chuyenMon === monCanXep.tenChuyenMon &&
+                  Math.abs(t.tiet - slot.tiet) === 1)
+              );
+              if (canhNhau) continue;
+            }
+            chosenSlot = slot;
+            break;
+          }
+          if (!chosenSlot) continue;
+
+          // Commit tiết
+          let ngay = tkb.ngayTrongTuan.find(n => n.thu === chosenSlot.thu && n.buoi === chosenSlot.buoi);
+          if (!ngay) {
+            ngay = { thu: chosenSlot.thu, buoi: chosenSlot.buoi, tiets: [] };
+            tkb.ngayTrongTuan.push(ngay);
+          }
+          ngay.tiets.push({
+            tiet: chosenSlot.tiet,
+            giaoVien: gvInfo.gv._id,
+            chuyenMon: monCanXep.tenChuyenMon,
+            ghiChuDieuChuyen: true,
+          });
+          ngay.tiets.sort((a, b) => a.tiet - b.tiet);
+          await tkb.save();
+
+          lichSuDieuChuyen.push({
+            gvTen: gvInfo.gv.hoTen,
+            tuPhanHieu: gvInfo.phanHieuChinh || '(không rõ)',
+            denPhanHieu: targetPhInfo.phanHieu,
+            lopTen: lop.tenLop,
+            mon: monCanXep.tenChuyenMon,
+            thu: chosenSlot.thu,
+            buoi: chosenSlot.buoi,
+            tiet: chosenSlot.tiet,
+          });
+
+          tongSoTietDieuChuyen++;
+          tietConDu--;
+          targetPhInfo.soTietThieu = Math.max(0, targetPhInfo.soTietThieu - 1);
+          xepDuocVongNay = true;
+          break;
+        }
+        if (!xepDuocVongNay) {
+          // Không xếp được tiết nào vào phân hiệu này → thoát loop tránh kẹt
+          targetPhInfo.soTietThieu = 0;
+        }
+      }
+    }
+
+    onProgress(95, 'save', 'Hoàn tất');
+    onProgress(100, 'done', 'Xong');
+
+    // Tổng hợp kết quả
+    const nhanhCheGV = [];
+    for (const info of gvTeachCount.values()) {
+      nhanhCheGV.push({
+        gv: info.gv.hoTen,
+        phanHieu: info.phanHieuChinh,
+        soTietDaDay: info.soTietDaDay,
+        soTietDinhMuc: info.soTietDinhMuc,
+        soTietDu: info.soTietDangDu,
+      });
+    }
+
+    return {
+      success: true,
+      partialSuccess: stillUnresolved.length > 0,
+      message: resolvedCases.length > 0
+        ? `Đã điều chuyển ${resolvedCases.length} lớp-môn từ WarningLog + ${tongSoTietDieuChuyen} tiết từ GV dư. Còn ${stillUnresolved.length} case chưa giải quyết được.`
+        : (tongSoTietDieuChuyen > 0
+          ? `Đã điều chuyển ${tongSoTietDieuChuyen} tiết cho ${gvDuList.length} GV`
+          : (unresolvedCases.length === 0 ? 'Không có GV dư để điều chuyển' : 'Không thể điều chuyển các case unresolved')),
+      tongSoTietDieuChuyen,
+      soGVDu: gvDuList.length,
+      resolvedFromUnresolved: resolvedCases,
+      stillUnresolved,
+      soStillUnresolved: stillUnresolved.length,
+      lichSuDieuChuyen,
+      nhanhCheGV,
+    };
+
+  } catch (error) {
+    console.error('Error assignOverflow:', error);
     throw error;
   }
 }
@@ -2761,6 +3748,8 @@ async function rearrangeAtomic(namHoc, options = {}) {
 
 module.exports = {
   autoGenerateTKB,
+  autoGenerateByPhanHieu,
+  assignOverflow,
   getTKBByLop,
   getTKBByGiaoVien,
   checkGVConflicts,

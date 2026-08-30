@@ -15,6 +15,37 @@ const tietSchema = new mongoose.Schema({
   chuyenMon: {
     type: String,
     required: true
+  },
+  filledByWarning: {
+    type: Boolean,
+    default: false
+  },
+  ghiChuDieuChuyen: {
+    type: Boolean,
+    default: false
+  },
+  warningMeta: {
+    lopId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Lop',
+      default: null
+    },
+    lopTen: {
+      type: String,
+      default: ''
+    },
+    mon: {
+      type: String,
+      default: ''
+    },
+    source: {
+      type: String,
+      default: 'warning-fill'
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    }
   }
 }, { _id: false });
 

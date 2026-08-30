@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { khoiAPI, lopAPI, giaoVienAPI } from '../services/api';
 
 const DANH_SACH_MON = [
@@ -12,8 +12,12 @@ function LopChuyenMonPage() {
   const [selectedKhoi, setSelectedKhoi] = useState('');
   const [lops, setLops] = useState([]);
   const [giaoViens, setGiaoViens] = useState([]);
+  const [allLops, setAllLops] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // Filter phân hiệu (mặc định "all")
+  const [selectedPhanHieu, setSelectedPhanHieu] = useState('all');
 
   // State cho modal chỉnh sửa môn học
   const [showModal, setShowModal] = useState(false);
@@ -32,12 +36,14 @@ function LopChuyenMonPage() {
 
   const fetchInitialData = async () => {
     try {
-      const [khoisRes, gvRes] = await Promise.all([
+      const [khoisRes, gvRes, lopRes] = await Promise.all([
         khoiAPI.getAll(),
-        giaoVienAPI.getAll()
+        giaoVienAPI.getAll(),
+        lopAPI.getAll()
       ]);
       setKhois(khoisRes.data.data);
       setGiaoViens(gvRes.data.data);
+      setAllLops(lopRes.data.data || []);
       if (khoisRes.data.data.length > 0) {
         setSelectedKhoi(khoisRes.data.data[0]._id);
       }
@@ -56,6 +62,22 @@ function LopChuyenMonPage() {
       console.error(err);
     }
   };
+
+  // Danh sách phân hiệu có trong các lớp của khối đang chọn
+  const phanHieuOptions = useMemo(() => {
+    const set = new Set();
+    lops.forEach(l => {
+      const ph = (l.phanHieu || '').trim();
+      if (ph) set.add(ph);
+    });
+    return [...set].sort();
+  }, [lops]);
+
+  // Lọc lớp theo phân hiệu (nếu chọn)
+  const visibleLops = useMemo(() => {
+    if (selectedPhanHieu === 'all') return lops;
+    return lops.filter(l => (l.phanHieu || '').trim() === selectedPhanHieu);
+  }, [lops, selectedPhanHieu]);
 
   const openEditModal = (lop) => {
     setEditingLop(lop);
@@ -119,56 +141,289 @@ function LopChuyenMonPage() {
         </p>
       </div>
 
-      {/* Chọn khối */}
+      {/* Chọn khối + Phân hiệu */}
       <div className="mb-6 bg-white rounded-lg shadow p-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Chọn Khối</label>
-        <div className="flex gap-2">
-          {khois.map(khoi => (
-            <button
-              key={khoi._id}
-              onClick={() => setSelectedKhoi(khoi._id)}
-              className={`px-4 py-2 rounded-lg font-medium transition ${
-                selectedKhoi === khoi._id
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Chọn Khối</label>
+            <div className="flex flex-wrap gap-2">
+              {khois.map(khoi => (
+                <button
+                  key={khoi._id}
+                  onClick={() => setSelectedKhoi(khoi._id)}
+                  className={`px-4 py-2 rounded-lg font-medium transition ${
+                    selectedKhoi === khoi._id
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {khoi.tenKhoi}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Lọc theo Phân hiệu</label>
+            <select
+              value={selectedPhanHieu}
+              onChange={(e) => setSelectedPhanHieu(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              {khoi.tenKhoi}
-            </button>
-          ))}
+              <option value="all">— Tất cả phân hiệu —</option>
+              {phanHieuOptions.map(ph => (
+                <option key={ph} value={ph}>{ph}</option>
+              ))}
+              {phanHieuOptions.length === 0 && (
+                <option value="" disabled>Khối này chưa có phân hiệu</option>
+              )}
+            </select>
+          </div>
         </div>
       </div>
 
+      {/* Tổng hợp toàn trường: ma trận Môn × Khối */}
+      {allLops.length > 0 && (() => {
+        // Lọc theo phân hiệu
+        const filteredAll = selectedPhanHieu === 'all'
+          ? allLops
+          : allLops.filter(l => (l.phanHieu || '').trim() === selectedPhanHieu);
+
+        // Gom theo khoi
+        const khoiMap = new Map(); // khoiId -> { tenKhoi, lops: [] }
+        filteredAll.forEach(lop => {
+          const khoiId = lop.khoi?._id || lop.khoi || '';
+          const tenKhoi = lop.khoi?.tenKhoi || 'Chưa xác định';
+          if (!khoiMap.has(khoiId)) khoiMap.set(khoiId, { tenKhoi, lops: [] });
+          khoiMap.get(khoiId).lops.push(lop);
+        });
+        const khoiList = [...khoiMap.entries()].sort((a, b) => {
+          // Sắp xếp khối theo số (1, 2, 3, 4, 5)
+          const na = parseInt(a[1].tenKhoi.match(/\d+/)?.[0] || '999');
+          const nb = parseInt(b[1].tenKhoi.match(/\d+/)?.[0] || '999');
+          return na - nb;
+        });
+
+        // Tập hợp môn
+        const monSet = new Set();
+        filteredAll.forEach(lop => (lop.chuyenMons || []).forEach(m => m.tenChuyenMon && monSet.add(m.tenChuyenMon)));
+        const monList = [...monSet].sort();
+
+        // Ma trận: mon -> khoiId -> soTiet
+        const matrix = {};
+        monList.forEach(m => { matrix[m] = {}; });
+        khoiList.forEach(([khoiId, info]) => {
+          info.lops.forEach(lop => {
+            (lop.chuyenMons || []).forEach(mon => {
+              const ten = mon.tenChuyenMon || '';
+              if (!ten) return;
+              matrix[ten][khoiId] = (matrix[ten][khoiId] || 0) + (mon.soTietTuan || 0);
+            });
+          });
+        });
+
+        // Tổng theo khối
+        const tongKhoi = {};
+        khoiList.forEach(([khoiId]) => {
+          tongKhoi[khoiId] = monList.reduce((s, m) => s + (matrix[m][khoiId] || 0), 0);
+        });
+        // Tổng theo môn (sum tất cả các khối)
+        const grandTotals = {};
+        monList.forEach(m => {
+          grandTotals[m] = khoiList.reduce((s, [khoiId]) => s + (matrix[m][khoiId] || 0), 0);
+        });
+        const grandTotal = monList.reduce((s, m) => s + grandTotals[m], 0);
+
+        if (filteredAll.length === 0) return null;
+
+        return (
+          <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-base font-semibold text-gray-700">
+                🏫 Tổng hợp toàn trường — Ma trận Môn × Khối
+              </h3>
+              <div className="text-sm text-gray-600">
+                <span className="font-bold text-blue-700 text-lg">{grandTotal}</span> tiết/tuần toàn trường
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-blue-100">
+                    <th className="px-3 py-2 text-left font-medium text-gray-700 border border-blue-200">Môn học</th>
+                    {khoiList.map(([khoiId, info]) => (
+                      <th key={khoiId} className="px-3 py-2 text-center font-medium text-gray-700 border border-blue-200">
+                        {info.tenKhoi}
+                      </th>
+                    ))}
+                    <th className="px-3 py-2 text-center font-bold text-blue-800 border border-blue-200 bg-blue-200">Tổng môn</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monList.map(mon => {
+                    const tongMonRow = grandTotals[mon];
+                    return (
+                      <tr key={mon} className="hover:bg-blue-50">
+                        <td className="px-3 py-2 font-medium text-gray-800 border border-gray-200">{mon}</td>
+                        {khoiList.map(([khoiId]) => {
+                          const v = matrix[mon][khoiId] || 0;
+                          return (
+                            <td key={khoiId} className={`px-3 py-2 text-center border border-gray-200 ${v > 0 ? 'font-semibold text-gray-700' : 'text-gray-300'}`}>
+                              {v > 0 ? v : '—'}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-2 text-center font-bold text-blue-700 border border-blue-200 bg-blue-50">
+                          {tongMonRow > 0 ? tongMonRow : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-blue-100 font-bold">
+                    <td className="px-3 py-2 border border-blue-200">Tổng khối</td>
+                    {khoiList.map(([khoiId]) => (
+                      <td key={khoiId} className="px-3 py-2 text-center text-blue-800 border border-blue-200">
+                        {tongKhoi[khoiId] > 0 ? tongKhoi[khoiId] : '—'}
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 text-center text-blue-900 bg-blue-300 border border-blue-300">
+                      {grandTotal}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <p className="mt-2 text-xs text-gray-500">
+              Lọc theo phân hiệu: <strong>{selectedPhanHieu === 'all' ? 'Tất cả' : selectedPhanHieu}</strong> · Số lớp: <strong>{filteredAll.length}</strong> · Số khối: <strong>{khoiList.length}</strong>
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* Thống kê số tiết cần dạy theo môn */}
+      {visibleLops.length > 0 && (
+        <div className="mb-6 bg-white rounded-lg shadow p-4">
+          <h3 className="text-base font-semibold text-gray-700 mb-3">
+            📊 Thống kê số tiết cần dạy theo môn
+            {selectedPhanHieu !== 'all' && (
+              <span className="ml-2 font-normal text-sm text-gray-500">
+                — Lọc theo phân hiệu: {selectedPhanHieu}
+              </span>
+            )}
+          </h3>
+          {(() => {
+            // Tổng hợp số tiết theo môn
+            const monStats = {};
+            visibleLops.forEach(lop => {
+              (lop.chuyenMons || []).forEach(mon => {
+                const ten = mon.tenChuyenMon || mon.mon || '';
+                if (!ten) return;
+                if (!monStats[ten]) monStats[ten] = { soTiet: 0, soLop: 0 };
+                monStats[ten].soTiet += mon.soTietTuan || 0;
+                monStats[ten].soLop += 1;
+              });
+            });
+            const sorted = Object.entries(monStats).sort((a, b) => b[1].soTiet - a[1].soTiet);
+            const tongTatCa = sorted.reduce((s, [, v]) => s + v.soTiet, 0);
+            return (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50">
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">Môn học</th>
+                      <th className="px-3 py-2 text-center font-medium text-gray-600">Số lớp dạy</th>
+                      <th className="px-3 py-2 text-center font-medium text-gray-600">Tổng tiết cần dạy/tuần</th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">Tỷ trọng</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {sorted.map(([ten, { soTiet, soLop }]) => (
+                      <tr key={ten} className="hover:bg-blue-50">
+                        <td className="px-3 py-2 font-medium text-gray-800">{ten}</td>
+                        <td className="px-3 py-2 text-center">{soLop} lớp</td>
+                        <td className="px-3 py-2 text-center font-bold text-blue-700">{soTiet} tiết</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-24 bg-gray-200 rounded-full h-2">
+                              <div
+                                className="bg-blue-500 h-2 rounded-full"
+                                style={{ width: `${tongTatCa > 0 ? (soTiet / tongTatCa) * 100 : 0}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-gray-500">
+                              {tongTatCa > 0 ? Math.round((soTiet / tongTatCa) * 100) : 0}%
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-blue-50 font-semibold">
+                      <td className="px-3 py-2">Tổng cộng</td>
+                      <td className="px-3 py-2 text-center">{sorted.length} môn</td>
+                      <td className="px-3 py-2 text-center text-blue-700">{tongTatCa} tiết</td>
+                      <td className="px-3 py-2">—</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* Danh sách lớp */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="p-4 border-b border-gray-200">
+        <div className="p-4 border-b border-gray-200 flex justify-between items-center">
           <h2 className="text-lg font-semibold">
             Danh sách Lớp - {khois.find(k => k._id === selectedKhoi)?.tenKhoi}
+            {selectedPhanHieu !== 'all' && (
+              <span className="ml-2 inline-block px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-sm">
+                Phân hiệu: {selectedPhanHieu}
+              </span>
+            )}
           </h2>
+          <span className="text-sm text-gray-500">
+            Hiển thị {visibleLops.length}/{lops.length} lớp
+          </span>
         </div>
 
-        {lops.length === 0 ? (
+        {visibleLops.length === 0 ? (
           <div className="p-8 text-center text-gray-500">
-            Chưa có lớp nào trong khối này
+            {lops.length === 0
+              ? 'Chưa có lớp nào trong khối này'
+              : `Không có lớp nào thuộc phân hiệu "${selectedPhanHieu}"`}
           </div>
         ) : (
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Lớp</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Phân hiệu</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Môn học đã phân công</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Tổng tiết/tuần</th>
                 <th className="px-4 py-3 text-center text-sm font-medium text-gray-600">Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {lops.map(lop => {
+              {visibleLops.map(lop => {
                 const monCount = lop.chuyenMons?.length || 0;
                 const tongTiet = lop.chuyenMons?.reduce((sum, m) => sum + m.soTietTuan, 0) || 0;
-                
+
                 return (
                   <tr key={lop._id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium">{lop.tenLop}</td>
+                    <td className="px-4 py-3">
+                      {lop.phanHieu ? (
+                        <span className="inline-block px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-xs">
+                          {lop.phanHieu}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 italic">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {monCount === 0 ? (
                         <span className="text-gray-400 italic">Chưa phân công</span>

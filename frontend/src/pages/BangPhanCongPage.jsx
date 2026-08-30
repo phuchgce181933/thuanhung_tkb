@@ -82,6 +82,7 @@ function BangPhanCongPage() {
   const [year, setYear] = useState('2024-2025');
   const [search, setSearch] = useState('');
   const [subject, setSubject] = useState('all');
+  const [branch, setBranch] = useState('all');
   const [loading, setLoading] = useState(false);
   const [usingSample, setUsingSample] = useState(true);
 
@@ -105,17 +106,50 @@ function BangPhanCongPage() {
   }, [year]);
 
   const subjects = useMemo(() => [...new Set(teachers.map(getTeacherSubject))].sort(), [teachers]);
+
+  // Danh sách phân hiệu có trong data
+  const branches = useMemo(() => {
+    const set = new Set();
+    teachers.forEach(t => {
+      const ph = (t?.phanHieu || '').trim();
+      if (ph) set.add(ph);
+    });
+    return [...set].sort();
+  }, [teachers]);
+
   const visibleTeachers = useMemo(() => teachers.filter((teacher) => {
     const name = getTeacherName(teacher).toLowerCase();
     const matchesSearch = name.includes(search.toLowerCase());
     const matchesSubject = subject === 'all' || getTeacherSubject(teacher) === subject;
-    return matchesSearch && matchesSubject;
-  }), [search, subject, teachers]);
+    const matchesBranch = branch === 'all' || (teacher?.phanHieu || '').trim() === branch;
+    return matchesSearch && matchesSubject && matchesBranch;
+  }), [search, subject, branch, teachers]);
 
   const getCell = (teacher, day, lesson) => {
     const teacherId = String(teacher._id);
     const session = lesson <= 4 ? 'sang' : 'chieu';
     return slots[getSlotKey(teacherId, day, session, lesson)] || null;
+  };
+
+  const getTeacherSummary = (teacher) => {
+    const phanCong = teacher?.phanCong || {};
+    const soTietKiemNhiem = Number(phanCong.soTietKiemNhiem || 0);
+    const soTietDinhMuc = Number(phanCong.soTietDinhMuc || 0);
+
+    // Đếm số tiết thực tế từ TKB (slots chứa tất cả tiết đã xếp)
+    const teacherId = String(teacher._id);
+    const soTietDuocPhanCong = Object.keys(slots).filter(key => key.startsWith(teacherId + '-')).length;
+
+    const duThieu = soTietDuocPhanCong + soTietKiemNhiem - soTietDinhMuc;
+
+    return {
+      phanHieu: teacher?.phanHieu || 'Chính',
+      phanCongKiemNhiem: phanCong.phanCongKiemNhiem || '-',
+      soTietKiemNhiem,
+      soTietDinhMuc,
+      soTietDuocPhanCong,
+      duThieu
+    };
   };
 
   const handlePrint = () => window.print();
@@ -156,6 +190,13 @@ function BangPhanCongPage() {
             {subjects.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
+        <label>
+          Phân hiệu
+          <select value={branch} onChange={(event) => setBranch(event.target.value)}>
+            <option value="all">Tất cả phân hiệu</option>
+            {branches.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
         <div className="toolbar-summary"><strong>{visibleTeachers.length}</strong> giáo viên</div>
       </div>
 
@@ -167,7 +208,13 @@ function BangPhanCongPage() {
             <tr>
               <th rowSpan="2" className="number-column">TT</th>
               <th rowSpan="2" className="teacher-column">Họ tên giáo viên</th>
+              <th rowSpan="2" className="branch-column">Phân hiệu</th>
               <th rowSpan="2" className="subject-column">Môn dạy</th>
+              <th rowSpan="2" className="stat-column">Phân công kiêm nhiệm</th>
+              <th rowSpan="2" className="stat-column">Số tiết kiêm nhiệm</th>
+              <th rowSpan="2" className="stat-column">Số tiết định mức</th>
+              <th rowSpan="2" className="stat-column">Số tiết được phân công</th>
+              <th rowSpan="2" className="stat-column">Tổng số tiết Dư-Thiếu</th>
               <th rowSpan="2" className="lesson-column">Tiết</th>
               {DAYS.map((day) => <th key={day} colSpan="2" className="day-header">{DAY_LABELS[day]}</th>)}
             </tr>
@@ -179,20 +226,30 @@ function BangPhanCongPage() {
             </tr>
           </thead>
           <tbody>
-            {visibleTeachers.flatMap((teacher, teacherIndex) => LESSONS.map((lesson, lessonIndex) => (
-              <tr key={`${teacher._id || teacherIndex}-${lesson}`}>
-                {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="number-cell">{teacherIndex + 1}</td>}
-                {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="teacher-cell"><strong>{getTeacherName(teacher)}</strong></td>}
-                {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="subject-cell">{getTeacherSubject(teacher)}</td>}
-                <td className="lesson-cell">{lesson}</td>
-                {DAYS.flatMap((day) => [lesson, lesson + 4].map((actualLesson) => {
-                  const cell = getCell(teacher, day, actualLesson);
-                  const isHighlighted = (day === 2 && actualLesson === lesson && lesson === 1)
-                    || (actualLesson === lesson + 4 && lesson === 4);
-                  return <td key={`${day}-${actualLesson}`} className={`schedule-cell${isHighlighted ? ' highlighted' : ''}`}>{cell?.className || ''}</td>;
-                }))}
-              </tr>
-            )))}
+            {visibleTeachers.flatMap((teacher, teacherIndex) => LESSONS.map((lesson, lessonIndex) => {
+              const summary = getTeacherSummary(teacher);
+
+              return (
+                <tr key={`${teacher._id || teacherIndex}-${lesson}`}>
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="number-cell">{teacherIndex + 1}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="teacher-cell"><strong>{getTeacherName(teacher)}</strong></td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="branch-cell">{summary.phanHieu}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="subject-cell">{getTeacherSubject(teacher)}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="stat-cell">{summary.phanCongKiemNhiem}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="stat-cell">{summary.soTietKiemNhiem}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="stat-cell">{summary.soTietDinhMuc}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className="stat-cell">{summary.soTietDuocPhanCong}</td>}
+                  {lessonIndex === 0 && <td rowSpan={LESSONS.length} className={`stat-cell du-thieu ${summary.duThieu >= 0 ? 'positive' : 'negative'}`}>{summary.duThieu}</td>}
+                  <td className="lesson-cell">{lesson}</td>
+                  {DAYS.flatMap((day) => [lesson, lesson + 4].map((actualLesson) => {
+                    const cell = getCell(teacher, day, actualLesson);
+                    const isHighlighted = (day === 2 && actualLesson === lesson && lesson === 1)
+                      || (actualLesson === lesson + 4 && lesson === 4);
+                    return <td key={`${day}-${actualLesson}`} className={`schedule-cell${isHighlighted ? ' highlighted' : ''}`}>{cell?.className || ''}</td>;
+                  }))}
+                </tr>
+              );
+            }))}
           </tbody>
         </table>
       </div>

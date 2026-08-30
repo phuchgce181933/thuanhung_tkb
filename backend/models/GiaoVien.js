@@ -18,6 +18,16 @@ const giaoVienSchema = new mongoose.Schema({
     required: [true, 'Họ tên không được để trống'],
     trim: true
   },
+  phanHieu: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  phanHieuDieuChuyen: {
+    type: String,
+    default: '',
+    trim: true
+  },
   chuyenMon: {
     type: [chuyenMonSchema],
     required: true,
@@ -50,6 +60,40 @@ const giaoVienSchema = new mongoose.Schema({
       min: 2,
       max: 6
     }]
+  },
+  phanCong: {
+    phanCongKiemNhiem: {
+      type: String,
+      default: ''
+    },
+    soTietKiemNhiem: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    soTietDinhMuc: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    soTietDuocPhanCong: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    soTietDieuChuyen: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    lopDieuChuyen: [{
+      type: String,
+      default: ''
+    }],
+    tongSoTietDuThieu: {
+      type: Number,
+      default: 0
+    }
   }
 }, {
   timestamps: true

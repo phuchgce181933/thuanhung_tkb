@@ -62,8 +62,8 @@ const giaoVienController = {
   // Tạo mới giáo viên
   create: async (req, res) => {
     try {
-      const { hoTen, chuyenMon, trangThai, nguyenVong } = req.body;
-      
+      const { hoTen, phanHieu, phanHieuDieuChuyen, chuyenMon, trangThai, nguyenVong, phanCong } = req.body;
+
       // Kiểm tra tên trùng
       const existing = await GiaoVien.findOne({ hoTen });
       if (existing) {
@@ -72,12 +72,15 @@ const giaoVienController = {
           message: 'Tên giáo viên đã tồn tại'
         });
       }
-      
+
       const gv = new GiaoVien({
         hoTen,
+        phanHieu,
+        phanHieuDieuChuyen: phanHieuDieuChuyen || '',
         chuyenMon,
         trangThai: trangThai || 'active',
-        nguyenVong: nguyenVong || undefined
+        nguyenVong: nguyenVong || undefined,
+        phanCong: phanCong || undefined
       });
       
       await gv.save();
@@ -97,11 +100,11 @@ const giaoVienController = {
   // Cập nhật giáo viên
   update: async (req, res) => {
     try {
-      const { hoTen, chuyenMon, trangThai, nguyenVong } = req.body;
-      
+      const { hoTen, phanHieu, phanHieuDieuChuyen, chuyenMon, trangThai, nguyenVong, phanCong } = req.body;
+
       const gv = await GiaoVien.findByIdAndUpdate(
         req.params.id,
-        { hoTen, chuyenMon, trangThai, nguyenVong },
+        { hoTen, phanHieu, phanHieuDieuChuyen: phanHieuDieuChuyen || '', chuyenMon, trangThai, nguyenVong, phanCong },
         { new: true, runValidators: true }
       );
       

@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
 import { lopAPI, khoiAPI } from '../services/api';
 
+const getPhanHieuOrder = (phanHieu) => {
+  const value = (phanHieu || 'Chính').trim().toLowerCase();
+  if (value === 'chính' || value === 'chinh') return 0;
+  const number = Number(value.replace(/[^0-9]/g, ''));
+  return Number.isNaN(number) ? 999 : number;
+};
+
 function LopPage() {
   const [lops, setLops] = useState([]);
   const [khois, setKhois] = useState([]);
@@ -9,9 +16,11 @@ function LopPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingLop, setEditingLop] = useState(null);
   const [filterKhoi, setFilterKhoi] = useState('');
+  const [filterPhanHieu, setFilterPhanHieu] = useState('');
   const [formData, setFormData] = useState({
     tenLop: '',
     khoi: '',
+    phanHieu: 'A',
     giaoVienChuNhiem: ''
   });
 
@@ -74,6 +83,7 @@ function LopPage() {
     setFormData({
       tenLop: lop.tenLop,
       khoi: typeof lop.khoi === 'object' ? lop.khoi._id : lop.khoi,
+      phanHieu: lop.phanHieu || 'A',
       giaoVienChuNhiem: lop.giaoVienChuNhiem || ''
     });
     setShowModal(true);
@@ -95,6 +105,7 @@ function LopPage() {
     setFormData({
       tenLop: '',
       khoi: khois.length > 0 ? khois[0]._id : '',
+      phanHieu: 'A',
       giaoVienChuNhiem: ''
     });
     setShowModal(true);
@@ -104,6 +115,15 @@ function LopPage() {
     setShowModal(false);
     setEditingLop(null);
   };
+
+  const sortedLops = [...lops].sort((first, second) => {
+    const branchOrder = getPhanHieuOrder(first.phanHieu) - getPhanHieuOrder(second.phanHieu);
+    if (branchOrder !== 0) return branchOrder;
+    return first.tenLop.localeCompare(second.tenLop, 'vi', { numeric: true });
+  });
+  const phanHieuOptions = [...new Set(lops.map(lop => lop.phanHieu).filter(Boolean))]
+    .sort((first, second) => getPhanHieuOrder(first) - getPhanHieuOrder(second));
+  const visibleLops = sortedLops.filter(lop => !filterPhanHieu || lop.phanHieu === filterPhanHieu);
 
   return (
     <div>
@@ -120,6 +140,16 @@ function LopPage() {
               <option key={khoi._id} value={khoi._id}>
                 {khoi.tenKhoi}
               </option>
+            ))}
+          </select>
+          <select
+            value={filterPhanHieu}
+            onChange={(e) => setFilterPhanHieu(e.target.value)}
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Tất cả phân hiệu</option>
+            {phanHieuOptions.map(phanHieu => (
+              <option key={phanHieu} value={phanHieu}>{phanHieu}</option>
             ))}
           </select>
           <button
@@ -157,6 +187,9 @@ function LopPage() {
                   Khối
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Phân hiệu
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   GV Chủ Nhiệm
                 </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -167,12 +200,12 @@ function LopPage() {
             <tbody className="bg-white divide-y divide-gray-200">
               {lops.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="px-6 py-4 text-center text-gray-500">
+                  <td colSpan="6" className="px-6 py-4 text-center text-gray-500">
                     Chưa có lớp nào. Hãy thêm lớp mới!
                   </td>
                 </tr>
               ) : (
-                lops.map((lop, index) => (
+                visibleLops.map((lop, index) => (
                   <tr key={lop._id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {index + 1}
@@ -182,6 +215,9 @@ function LopPage() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {typeof lop.khoi === 'object' ? lop.khoi.tenKhoi : ''}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {lop.phanHieu || 'A'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {lop.giaoVienChuNhiem || '-'}
@@ -249,6 +285,18 @@ function LopPage() {
                       </option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Phân hiệu
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.phanHieu}
+                    onChange={(e) => setFormData({ ...formData, phanHieu: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="VD: A, B, C, H..."
+                  />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">

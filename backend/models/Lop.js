@@ -11,6 +11,11 @@ const lopSchema = new mongoose.Schema({
     ref: 'Khoi',
     required: [true, 'Khối không được để trống']
   },
+  phanHieu: {
+    type: String,
+    default: 'A',
+    trim: true
+  },
   giaoVienChuNhiem: {
     type: String,
     default: ''
@@ -24,6 +29,8 @@ const lopSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Phân hiệu là text tự nhập nên không nên nằm trong khóa duy nhất.
+// Nếu giữ phanHieu trong unique index, khi sửa về A/B hoặc nhập trùng sẽ bị chặn.
 lopSchema.index({ tenLop: 1, khoi: 1 }, { unique: true });
 
 module.exports = mongoose.model('Lop', lopSchema);

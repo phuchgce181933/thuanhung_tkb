@@ -1,5 +1,9 @@
 const ThoiKhoaBieu = require('../models/ThoiKhoaBieu');
+const WarningLog = require('../models/WarningLog');
+const AssignOverflowLog = require('../models/AssignOverflowLog');
+const Lop = require('../models/Lop');
 const tkbService = require('../services/tkbService');
+const jobStore = require('../services/jobStore');
 
 const thoiKhoaBieuController = {
   // Lấy TKB theo lớp
@@ -118,23 +122,191 @@ const thoiKhoaBieuController = {
   // Sắp xếp TKB tự động
   autoGenerate: async (req, res) => {
     try {
-      const { namHoc } = req.body;
-      
+      const { namHoc, phanHieu } = req.body;
+
       if (!namHoc) {
         return res.status(400).json({
           success: false,
           message: 'Cần cung cấp năm học'
         });
       }
-      
-      const result = await tkbService.autoGenerateTKB(namHoc);
-      
-      res.json(result);
+
+      // Tạo job và chạy background, trả về jobId ngay để client poll
+      const job = jobStore.createJob();
+      jobStore.updateJob(job.jobId, {
+        percent: 1,
+        stage: 'init',
+        message: 'Đang khởi động...'
+      });
+
+      // Fire-and-forget: chạy async, lưu progress vào jobStore
+      (async () => {
+        const startTime = Date.now();
+        const phanHieuLog = phanHieu ? ` phanHieu=${phanHieu}` : '';
+        console.log(`[autoGenerate] job=${job.jobId} namHoc=${namHoc}${phanHieuLog} STARTED`);
+        try {
+          const serviceOptions = { phanHieu: phanHieu || null, clearOld: true };
+          const result = await tkbService.autoGenerateTKB(namHoc, (percent, stage, message) => {
+            jobStore.updateJob(job.jobId, { percent, stage, message });
+            console.log(`[autoGenerate] job=${job.jobId} tick ${percent}% ${stage}: ${message}`);
+          });
+          console.log(`[autoGenerate] job=${job.jobId} COMPLETED in ${Date.now() - startTime}ms`);
+          // Lưu WarningLog nếu có
+          if (result && Array.isArray(result.warnings)) {
+            const missingClasses = (result.warnings || [])
+              .map((warning) => {
+                const match = String(warning).match(/Lớp\s+(.+?):\s+Môn\s+"(.+?)"\s+vẫn còn thiếu\s+(\d+)\s+tiết/i);
+                if (!match) return null;
+                return {
+                  lop: match[1]?.trim() || '',
+                  mon: match[2]?.trim() || '',
+                  soTietConThieu: Number(match[3]) || 0,
+                  message: warning,
+                  level: 'warning'
+                };
+              })
+              .filter(Boolean);
+
+            const summary = {
+              totalMissingClasses: missingClasses.length,
+              totalMissingPeriods: missingClasses.reduce((total, item) => total + (Number(item.soTietConThieu) || 0), 0)
+            };
+
+            try {
+              await WarningLog.create({
+                namHoc,
+                title: result.title || 'Cảnh báo',
+                message: result.message || '',
+                warnings: result.warnings,
+                missingClasses,
+                summary,
+                type: result.success ? 'warning' : 'error'
+              });
+            } catch (logErr) {
+              console.warn('Không thể lưu WarningLog:', logErr.message);
+            }
+          }
+
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'done',
+            message: result?.message || 'Hoàn tất',
+            status: 'done',
+            result,
+          });
+        } catch (error) {
+          console.error(`[autoGenerate] job=${job.jobId} ERROR after ${Date.now() - startTime}ms:`, error);
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'error',
+            message: error.message,
+            status: 'error',
+            error: error.message,
+          });
+        }
+      })();
+
+      // Trả về jobId ngay để client poll
+      res.json({
+        success: true,
+        jobId: job.jobId,
+        async: true,
+        message: 'Đã bắt đầu sắp xếp, đang xử lý...',
+      });
     } catch (error) {
       res.status(500).json({
         success: false,
         message: error.message
       });
+    }
+  },
+
+  /**
+   * Lấy progress của job autoGenerate.
+   * GET /api/thoi-khoa-bieu/progress/:jobId
+   */
+  getProgress: async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const job = jobStore.getJob(jobId);
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          message: 'Không tìm thấy job'
+        });
+      }
+      res.json({
+        success: true,
+        data: {
+          jobId: job.jobId,
+          status: job.status,
+          percent: job.percent,
+          stage: job.stage,
+          message: job.message,
+          result: job.status === 'done' ? job.result : undefined,
+          error: job.status === 'error' ? job.error : undefined,
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+  },
+
+  getWarningLogs: async (req, res) => {
+    try {
+      const { namHoc } = req.query;
+      const query = namHoc ? { namHoc } : {};
+      const logs = await WarningLog.find(query).sort({ createdAt: -1 }).limit(20).lean();
+
+      res.json({
+        success: true,
+        data: logs
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+  },
+
+  /**
+   * Danh sách log assignOverflow (mới nhất trên đầu).
+   * GET /api/thoi-khoa-bieu/assign-overflow-logs?namHoc=...
+   * Mỗi item là summary (không bao gồm mảng chi tiết).
+   */
+  getAssignOverflowLogs: async (req, res) => {
+    try {
+      const { namHoc, limit = 50 } = req.query;
+      const query = namHoc ? { namHoc } : {};
+      const logs = await AssignOverflowLog.find(query)
+        .sort({ createdAt: -1 })
+        .limit(Math.min(Number(limit) || 50, 200))
+        .select('-resolvedFromUnresolved -stillUnresolved -lichSuDieuChuyen -nhanhCheGV')
+        .lean();
+
+      res.json({ success: true, data: logs });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * Chi tiết 1 log assignOverflow.
+   * GET /api/thoi-khoa-bieu/assign-overflow-logs/:id
+   */
+  getAssignOverflowLogById: async (req, res) => {
+    try {
+      const log = await AssignOverflowLog.findById(req.params.id).lean();
+      if (!log) {
+        return res.status(404).json({ success: false, message: 'Không tìm thấy log' });
+      }
+      res.json({ success: true, data: log });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
   },
 
@@ -794,7 +966,389 @@ const thoiKhoaBieuController = {
         message: error.message
       });
     }
-  }
+  },
+
+  /**
+   * Sắp TKB cho 1 phân hiệu cụ thể (endpoint mới, tách từ autoGenerate).
+   * Body: { namHoc, phanHieu }
+   * Trả về jobId để client poll progress.
+   */
+  autoGenerateByPhanHieu: async (req, res) => {
+    try {
+      const { namHoc, phanHieu } = req.body;
+      if (!namHoc) {
+        return res.status(400).json({ success: false, message: 'Cần cung cấp năm học' });
+      }
+      if (!phanHieu) {
+        return res.status(400).json({ success: false, message: 'Cần cung cấp phân hiệu' });
+      }
+
+      const job = jobStore.createJob();
+      jobStore.updateJob(job.jobId, {
+        percent: 1,
+        stage: 'init',
+        message: `Đang khởi động sắp TKB phân hiệu "${phanHieu}"...`,
+      });
+
+      (async () => {
+        const startTime = Date.now();
+        console.log(`[autoGenerateByPhanHieu] job=${job.jobId} namHoc=${namHoc} phanHieu=${phanHieu} STARTED`);
+        try {
+          const result = await tkbService.autoGenerateByPhanHieu(namHoc, phanHieu, (percent, stage, message) => {
+            jobStore.updateJob(job.jobId, { percent, stage, message });
+          });
+          console.log(`[autoGenerateByPhanHieu] job=${job.jobId} COMPLETED in ${Date.now() - startTime}ms`);
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'done',
+            message: result?.message || 'Hoàn tất',
+            status: 'done',
+            result,
+          });
+        } catch (error) {
+          console.error(`[autoGenerateByPhanHieu] job=${job.jobId} ERROR after ${Date.now() - startTime}ms:`, error);
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'error',
+            message: error.message,
+            status: 'error',
+            error: error.message,
+          });
+        }
+      })();
+
+      res.json({
+        success: true,
+        jobId: job.jobId,
+        async: true,
+        message: `Đã bắt đầu sắp xếp TKB cho phân hiệu "${phanHieu}"...`,
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * Sắp điều chuyển (chạy SAU khi đã sắp theo phân hiệu).
+   * Body: { namHoc }
+   * Trả về jobId để client poll progress.
+   */
+  assignOverflow: async (req, res) => {
+    try {
+      const { namHoc } = req.body;
+      if (!namHoc) {
+        return res.status(400).json({ success: false, message: 'Cần cung cấp năm học' });
+      }
+
+      const job = jobStore.createJob();
+      jobStore.updateJob(job.jobId, {
+        percent: 1,
+        stage: 'init',
+        message: 'Đang khởi động sắp điều chuyển...',
+      });
+
+      (async () => {
+        const startTime = Date.now();
+        console.log(`[assignOverflow] job=${job.jobId} namHoc=${namHoc} STARTED`);
+        try {
+          const result = await tkbService.assignOverflow(namHoc, (percent, stage, message) => {
+            jobStore.updateJob(job.jobId, { percent, stage, message });
+          });
+          const duration = Date.now() - startTime;
+          console.log(`[assignOverflow] job=${job.jobId} COMPLETED in ${duration}ms`);
+
+          // Lưu log chi tiết để có thể xem lại sau (persist xuống DB)
+          try {
+            const resolvedArr = result?.resolvedFromUnresolved || [];
+            const soAddCases = resolvedArr.filter(r => r.action === 'add').length;
+            const soMoveCases = resolvedArr.filter(r => r.action === 'move').length;
+            await AssignOverflowLog.create({
+              namHoc,
+              status: 'done',
+              message: result?.message || '',
+              partialSuccess: !!result?.partialSuccess,
+              tongSoTietDieuChuyen: result?.tongSoTietDieuChuyen || 0,
+              soGVDu: result?.soGVDu || 0,
+              soStillUnresolved: result?.soStillUnresolved || 0,
+              soResolvedFromUnresolved: resolvedArr.length,
+              soAddCases,
+              soMoveCases,
+              duration,
+              resolvedFromUnresolved: resolvedArr,
+              stillUnresolved: result?.stillUnresolved || [],
+              lichSuDieuChuyen: result?.lichSuDieuChuyen || [],
+              nhanhCheGV: result?.nhanhCheGV || [],
+            });
+          } catch (logErr) {
+            console.warn('[assignOverflow] Failed to save AssignOverflowLog:', logErr.message);
+          }
+
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'done',
+            message: result?.message || 'Hoàn tất',
+            status: 'done',
+            result,
+          });
+        } catch (error) {
+          const duration = Date.now() - startTime;
+          console.error(`[assignOverflow] job=${job.jobId} ERROR after ${duration}ms:`, error);
+
+          // Lưu log lỗi
+          try {
+            await AssignOverflowLog.create({
+              namHoc,
+              status: 'error',
+              message: error.message,
+              duration,
+            });
+          } catch (logErr) {
+            console.warn('[assignOverflow] Failed to save error log:', logErr.message);
+          }
+
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'error',
+            message: error.message,
+            status: 'error',
+            error: error.message,
+          });
+        }
+      })();
+
+      res.json({
+        success: true,
+        jobId: job.jobId,
+        async: true,
+        message: 'Đã bắt đầu sắp điều chuyển...',
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+  // ====== 8. Unresolved Cases (lớp-môn không xếp được, lưu để điều chuyển sau) ======
+  // Upsert: mỗi năm học chỉ có 1 doc lưu unresolved cases
+  saveUnresolvedCases: async (req, res) => {
+    try {
+      const { namHoc, groups } = req.body; // groups: { phanHieu: [{ lop, mon, missing, needed, reason }] }
+      if (!namHoc) return res.status(400).json({ success: false, message: 'Cần cung cấp namHoc' });
+      if (!groups || typeof groups !== 'object') return res.status(400).json({ success: false, message: 'Cần cung cấp groups' });
+
+      // Build missingClasses từ groups
+      const missingClasses = [];
+      for (const [phanHieu, cases] of Object.entries(groups)) {
+        for (const c of cases) {
+          missingClasses.push({
+            lop: c.lop,
+            mon: c.mon,
+            soTietConThieu: c.missing,
+            phanHieu,
+            message: `thiếu ${c.missing}/${c.needed} tiết (${c.reason})`,
+          });
+        }
+      }
+      const totalCount = missingClasses.length;
+
+      const doc = await WarningLog.findOneAndUpdate(
+        { namHoc, type: 'unresolved' },
+        {
+          $set: {
+            namHoc,
+            type: 'unresolved',
+            title: 'Lớp-môn chưa xếp được (chờ điều chuyển)',
+            message: `Có ${totalCount} lớp-môn không xếp được tại các phân hiệu`,
+            missingClasses,
+            summary: { totalMissingClasses: totalCount, totalMissingPeriods: totalCount },
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      res.json({ success: true, data: doc });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  getUnresolvedCases: async (req, res) => {
+    try {
+      const { namHoc } = req.query;
+      const query = { namHoc, type: 'unresolved' };
+      const doc = await WarningLog.findOne(query).lean();
+      res.json({ success: true, data: doc || null });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  // Xóa toàn bộ TKB của 1 năm học + clear warning log liên quan
+  deleteAllTkbByNamHoc: async (req, res) => {
+    try {
+      const { namHoc } = req.body;
+      if (!namHoc) return res.status(400).json({ success: false, message: 'Cần cung cấp namHoc' });
+      const result = await ThoiKhoaBieu.deleteMany({ namHoc });
+      await WarningLog.deleteOne({ namHoc, type: 'unresolved' });
+      res.json({
+        success: true,
+        message: `Đã xóa ${result.deletedCount} TKB của năm học ${namHoc}.`,
+        deletedCount: result.deletedCount,
+      });
+    } catch (error) {
+      console.error('[deleteAllTkbByNamHoc] ERROR:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * Sắp TKB cho tất cả các phân hiệu (chạy tuần tự).
+   * Trả về jobId để client poll progress.
+   */
+  autoGenerateAllPhanHieus: async (req, res) => {
+    const { namHoc } = req.body;
+    if (!namHoc) return res.status(400).json({ success: false, message: 'Cần cung cấp namHoc' });
+    try {
+      const lops = await Lop.find({}).lean();
+      const phanHieus = [...new Set(lops.map(l => (l.phanHieu || '').trim()).filter(Boolean))];
+      if (phanHieus.length === 0) {
+        return res.status(400).json({ success: false, message: 'Không có phân hiệu nào trong DB.' });
+      }
+      const job = jobStore.createJob();
+      const startTime = Date.now();
+      (async () => {
+        try {
+          console.log(`[autoGenerateAllPhanHieus] job=${job.jobId} namHoc=${namHoc} phanHieus=${phanHieus.length} STARTED`);
+          const summary = [];
+          for (let i = 0; i < phanHieus.length; i++) {
+            const ph = phanHieus[i];
+            jobStore.updateJob(job.jobId, {
+              percent: Math.floor((i / phanHieus.length) * 100),
+              stage: 'phanhieu',
+              message: `Đang sắp phân hiệu "${ph}" (${i + 1}/${phanHieus.length})`,
+            });
+            try {
+              const result = await tkbService.autoGenerateByPhanHieu(namHoc, ph, () => {});
+              summary.push({ phanHieu: ph, ok: true, soLop: (result.results || []).length });
+            } catch (e) {
+              console.error(`[autoGenerateAllPhanHieus] phanHieu=${ph} ERROR:`, e.message);
+              summary.push({ phanHieu: ph, ok: false, error: e.message });
+            }
+          }
+          jobStore.updateJob(job.jobId, {
+            percent: 100,
+            stage: 'done',
+            status: 'done',
+            message: `Hoàn tất ${phanHieus.length} phân hiệu`,
+            result: { summary },
+          });
+          console.log(`[autoGenerateAllPhanHieus] job=${job.jobId} COMPLETED in ${Date.now() - startTime}ms`);
+        } catch (error) {
+          console.error(`[autoGenerateAllPhanHieus] job=${job.jobId} ERROR after ${Date.now() - startTime}ms:`, error);
+          jobStore.updateJob(job.jobId, {
+            status: 'error',
+            error: error.message,
+          });
+        }
+      })();
+      res.json({ success: true, jobId: job.jobId, phanHieus });
+    } catch (error) {
+      console.error('[autoGenerateAllPhanHieus] setup ERROR:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  clearUnresolvedCases: async (req, res) => {
+    try {
+      const { namHoc } = req.body;
+      if (!namHoc) return res.status(400).json({ success: false, message: 'Cần cung cấp namHoc' });
+      await WarningLog.deleteOne({ namHoc, type: 'unresolved' });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  // Re-detect các lớp-môn thiếu GV hiện tại và cập nhật unresolved cases
+  recheckUnresolved: async (req, res) => {
+    try {
+      const { namHoc } = req.body;
+      if (!namHoc) return res.status(400).json({ success: false, message: 'Cần cung cấp namHoc' });
+
+      const tkbs = await ThoiKhoaBieu.find({ namHoc });
+      const lops = await Lop.find();
+
+      // Build map: lopId -> { phanHieu, missingByMon: { mon -> soTietThieu } }
+      const lopInfo = new Map();
+      for (const lop of lops) {
+        lopInfo.set(lop._id.toString(), {
+          phanHieu: (lop.phanHieu || '').trim(),
+          chuyenMons: lop.chuyenMons || []
+        });
+      }
+
+      // Đếm tiết đã xếp theo lop + mon
+      const tkbByLop = new Map();
+      for (const tkb of tkbs) {
+        tkbByLop.set(tkb.lop.toString(), tkb);
+      }
+
+      // Chỉ check các lớp ĐÃ CÓ TKB - lớp chưa sắp không phải "missing" sau điều chuyển
+      const missingClasses = [];
+      for (const [lopId, info] of lopInfo.entries()) {
+        const tkb = tkbByLop.get(lopId);
+        if (!tkb) continue; // bỏ qua lớp chưa có TKB
+        const monCount = new Map();
+        for (const ngay of tkb.ngayTrongTuan || []) {
+          for (const tiet of ngay.tiets || []) {
+            if (!tiet.giaoVien) continue; // chỉ tính tiết CÓ GV
+            monCount.set(tiet.chuyenMon, (monCount.get(tiet.chuyenMon) || 0) + 1);
+          }
+        }
+        for (const cm of info.chuyenMons) {
+          const ten = cm.tenChuyenMon || cm.mon || '';
+          if (!ten) continue;
+          const need = cm.soTietTuan || 0;
+          const have = monCount.get(ten) || 0;
+          if (have < need) {
+            missingClasses.push({
+              lop: lops.find(l => l._id.toString() === lopId)?.tenLop || lopId,
+              mon: ten,
+              soTietConThieu: need - have,
+              phanHieu: info.phanHieu,
+              message: `thiếu ${need - have}/${need} tiết (sau khi điều chuyển)`,
+            });
+          }
+        }
+      }
+
+      if (missingClasses.length === 0) {
+        // Không còn case nào thiếu → xóa WarningLog unresolved
+        await WarningLog.deleteOne({ namHoc, type: 'unresolved' });
+        return res.json({ success: true, totalCount: 0, message: 'Đã xử lý xong tất cả các lớp-môn thiếu' });
+      }
+
+      // Có case thiếu → upsert WarningLog
+      const totalCount = missingClasses.length;
+      const doc = await WarningLog.findOneAndUpdate(
+        { namHoc, type: 'unresolved' },
+        {
+          $set: {
+            namHoc,
+            type: 'unresolved',
+            title: 'Lớp-môn chưa xếp được (chờ điều chuyển)',
+            message: `Có ${totalCount} lớp-môn không xếp được tại các phân hiệu`,
+            missingClasses,
+            summary: { totalMissingClasses: totalCount, totalMissingPeriods: totalCount },
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      res.json({ success: true, data: doc, totalCount });
+    } catch (error) {
+      console.error('recheckUnresolved error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
 };
 
 module.exports = thoiKhoaBieuController;

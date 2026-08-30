@@ -166,13 +166,17 @@
 
 .number-column { width: 42px; }
 .teacher-column { width: 145px; }
+.branch-column { width: 90px; }
 .subject-column { width: 112px; }
+.stat-column { width: 120px; }
 .lesson-column { width: 48px; }
 
 .number-cell,
-.lesson-cell {
+.lesson-cell,
+.branch-cell,
+.stat-cell {
   color: #334155;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 700;
 }
 
@@ -185,6 +189,10 @@
 }
 
 .subject-cell { color: #475569; }
+
+.du-thieu { font-weight: 800; }
+.du-thieu.positive { color: #0f766e; }
+.du-thieu.negative { color: #b91c1c; }
 
 .schedule-cell {
   height: 42px;
